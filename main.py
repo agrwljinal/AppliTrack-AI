@@ -3,11 +3,14 @@ from fastapi import FastAPI
 from rich.console import Console
 from rich.panel import Panel
 
+from api.routes import router
 from agent.orchestrator import run_cycle
 from cli.onboarding import register_onboarding_command
 
 cli = typer.Typer(no_args_is_help=True)
-api = FastAPI(title="AppliTrack AI")
+app = FastAPI(title="AppliTrack AI")
+app.include_router(router)
+api = app
 console = Console()
 register_onboarding_command(cli)
 

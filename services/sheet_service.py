@@ -69,10 +69,10 @@ def _create_client() -> gspread.Client | None:
     return None
 
 
-def _get_worksheet() -> gspread.Worksheet | None:
-    spreadsheet_id = os.getenv("GOOGLE_SHEET_ID")
+def _get_worksheet(sheet_id: str | None = None) -> gspread.Worksheet | None:
+    spreadsheet_id = sheet_id or os.getenv("GOOGLE_SHEET_ID")
     if not spreadsheet_id:
-        logger.warning("Google Sheet is not configured; set GOOGLE_SHEET_ID.")
+        logger.warning("Google Sheet is not configured; provide a sheet ID or set GOOGLE_SHEET_ID.")
         return None
 
     client = _create_client()
@@ -98,8 +98,8 @@ def _get_worksheet() -> gspread.Worksheet | None:
         return None
 
 
-def update_or_append_application(app_data: JobApplication) -> bool:
-    worksheet = _get_worksheet()
+def update_or_append_application(app_data: JobApplication, sheet_id: str | None = None) -> bool:
+    worksheet = _get_worksheet(sheet_id)
     if worksheet is None:
         return False
 
