@@ -3,9 +3,12 @@ from fastapi import FastAPI
 from rich.console import Console
 from rich.panel import Panel
 
+from cli.onboarding import register_onboarding_command
+
 cli = typer.Typer(no_args_is_help=True)
 api = FastAPI(title="AppliTrack AI")
 console = Console()
+register_onboarding_command(cli)
 
 
 @cli.callback()
