@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+typer
+rich
+pydantic
+python-dotenv
+gspread
+google-genai
