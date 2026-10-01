@@ -1,3 +1,5 @@
+import base64
+import binascii
 import json
 import logging
 import os
@@ -31,23 +33,32 @@ def _create_client() -> gspread.Client | None:
     credential_value = os.getenv("GOOGLE_SHEETS_CREDENTIALS_JSON")
 
     if credential_value:
-        credential_path = Path(credential_value).expanduser()
-        if not credential_path.is_absolute():
-            credential_path = PROJECT_ROOT / credential_path
+        credential_value = credential_value.strip()
+        if not credential_value.startswith("{") and len(credential_value) <= 240:
+            credential_path = Path(credential_value).expanduser()
+            if not credential_path.is_absolute():
+                credential_path = PROJECT_ROOT / credential_path
 
-        if credential_path.is_file():
             try:
-                return gspread.service_account(filename=str(credential_path), scopes=SCOPES)
-            except Exception as exc:
-                logger.warning("Could not load Google Sheets credentials: %s", exc)
-                return None
+                if credential_path.is_file():
+                    return gspread.service_account(filename=str(credential_path), scopes=SCOPES)
+            except OSError:
+                pass
 
         try:
-            credentials_info = json.loads(credential_value)
+            try:
+                credentials_info = json.loads(credential_value)
+            except json.JSONDecodeError:
+                decoded_value = base64.b64decode(credential_value, validate=True).decode("utf-8")
+                credentials_info = json.loads(decoded_value)
+
+            if not isinstance(credentials_info, dict):
+                raise ValueError("Credentials must be a JSON object")
             return gspread.service_account_from_dict(credentials_info, scopes=SCOPES)
-        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
             logger.warning(
-                "GOOGLE_SHEETS_CREDENTIALS_JSON must be a credential file path or valid JSON: %s",
+                "GOOGLE_SHEETS_CREDENTIALS_JSON must be a credential file path, valid JSON, "
+                "or base64-encoded JSON: %s",
                 exc,
             )
             return None
