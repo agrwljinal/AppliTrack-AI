@@ -20,5 +20,49 @@ AppliTrack AI monitors your job submissions across platforms like **LinkedIn, Un
 
 1. **Clone the repository:**
    ```bash
-   git clone [https://github.com/YOUR_USERNAME/applitrack-ai.git](https://github.com/YOUR_USERNAME/applitrack-ai.git)
+    git clone https://github.com/YOUR_USERNAME/applitrack-ai.git
    cd applitrack-ai
+    pip install -r requirements.txt
+    ```
+
+### Webhook Onboarding
+
+Send each application to your deployed webhook with the target client's Google Sheet ID. The Google service account configured on the server must have access to that sheet.
+
+```bash
+curl --request POST \
+   --url "https://<your-render-app>.onrender.com/webhook/application" \
+   --header "Content-Type: application/json" \
+   --data '{
+      "sheet_id": "YOUR_CLIENT_GOOGLE_SHEET_ID",
+      "applicant_data": {
+         "company": "Acme",
+         "role": "Software Engineer",
+         "platform_used": "Typeform",
+         "resume_text": "Applicant resume or application details"
+      }
+   }'
+```
+
+#### Typeform with Make.com
+
+Create a Make.com scenario with a **Typeform: Watch Responses** trigger followed by **HTTP: Make a request**:
+
+- Method: `POST`
+- URL: `https://<your-render-app>.onrender.com/webhook/application`
+- Header: `Content-Type: application/json`
+- Body type: `Raw` with `application/json`
+
+Use this body shape and replace the `{{...}}` placeholders by mapping the corresponding answer tokens from the Typeform trigger:
+
+```json
+{
+   "sheet_id": "YOUR_CLIENT_GOOGLE_SHEET_ID",
+   "applicant_data": {
+      "company": "{{1.company}}",
+      "role": "{{1.role}}",
+      "platform_used": "Typeform",
+      "resume_text": "{{1.resume_text}}"
+   }
+}
+```
