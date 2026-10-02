@@ -8,7 +8,7 @@ from google.genai import types
 
 from services.sheet_service import JobApplication, PROJECT_ROOT
 
-MODEL_NAME = "gemini-2.5-flash"
+MODEL_NAME = "gemini-3.8-flash"
 logger = logging.getLogger(__name__)
 
 load_dotenv(PROJECT_ROOT / ".env")
