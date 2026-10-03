@@ -109,6 +109,34 @@ def _get_worksheet(sheet_id: str | None = None) -> gspread.Worksheet | None:
         return None
 
 
+def read_recent_applications(sheet_id: str, limit: int = 10) -> list[dict[str, str]] | None:
+    """Return the most recently appended application rows, or None if the sheet is unreadable."""
+    worksheet = _get_worksheet(sheet_id)
+    if worksheet is None:
+        return None
+
+    try:
+        rows = worksheet.get_all_values()
+    except Exception as exc:
+        logger.warning("Could not read the AppliTrack Google Sheet: %s", exc)
+        return None
+
+    if not rows:
+        return []
+
+    header = [column.strip() for column in rows[0]]
+    columns = header if header == list(HEADERS) else list(HEADERS)
+
+    applications: list[dict[str, str]] = []
+    for row in rows[1:]:
+        if not any(cell.strip() for cell in row):
+            continue
+        padded = row + [""] * (len(columns) - len(row))
+        applications.append({name: padded[index] for index, name in enumerate(columns)})
+
+    return applications[-limit:] if limit > 0 else applications
+
+
 def update_or_append_application(app_data: JobApplication, sheet_id: str | None = None) -> bool:
     worksheet = _get_worksheet(sheet_id)
     if worksheet is None:

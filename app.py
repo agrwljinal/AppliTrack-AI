@@ -1,11 +1,16 @@
+import json
+import os
 import re
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal, NamedTuple
 
 import requests
 import streamlit as st
 
-WEBHOOK_URL = "https://applitrack-ai.onrender.com/webhook/application"
-HEALTH_URL = "https://applitrack-ai.onrender.com/health"
+API_BASE_URL = "https://applitrack-ai.onrender.com"
+WEBHOOK_URL = f"{API_BASE_URL}/webhook/application"
+HEALTH_URL = f"{API_BASE_URL}/health"
+APPLICATIONS_URL = f"{API_BASE_URL}/applications"
 SERVICE_ACCOUNT_EMAIL = (
     "applitrack-service-account@gen-lang-client-0780751036.iam.gserviceaccount.com"
 )
@@ -21,10 +26,21 @@ PLATFORMS = (
     "Email Notification",
     "Custom Portal",
 )
-CUSTOM_PORTAL = "Custom Portal"
+CONFIG_PATH = Path(__file__).resolve().parent / "applitrack_config.json"
+API_KEY_ENV_VAR = "APPLITRACK_API_KEY"
 SHEET_URL_PATTERN = re.compile(r"/spreadsheets/d/([a-zA-Z0-9-_]+)")
 RAW_SHEET_ID_PATTERN = re.compile(r"^[a-zA-Z0-9-_]{10,}$")
 REQUEST_TIMEOUT = 30
+REFRESH_SECONDS = 30
+LOG_LIMIT = 10
+
+FetchState = Literal["ok", "empty", "unauthorized", "unreachable", "error"]
+
+
+class FetchResult(NamedTuple):
+    state: FetchState
+    rows: list[dict[str, Any]]
+    message: str
 
 
 def extract_sheet_id(value: str) -> str | None:
@@ -43,40 +59,21 @@ def extract_sheet_id(value: str) -> str | None:
     return None
 
 
-def build_resume_text(platform: str, details: str) -> str:
-    """Combine the platform origin and the raw application text for classification."""
-    return f"Platform: {platform}\n\n{details.strip()}"
-
-
-def post_application(sheet_id: str, resume_text: str) -> tuple[bool, str, dict[str, Any] | None]:
-    """Send one application to the AppliTrack AI webhook."""
+def load_saved_sheet_id() -> str:
     try:
-        response = requests.post(
-            WEBHOOK_URL,
-            json={"sheet_id": sheet_id, "resume_text": resume_text},
-            timeout=REQUEST_TIMEOUT,
-        )
-    except requests.RequestException as exc:
-        return False, f"Could not reach the AppliTrack AI service: {exc}", None
+        saved = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    sheet_id = saved.get("sheet_id", "") if isinstance(saved, dict) else ""
+    return sheet_id if isinstance(sheet_id, str) else ""
 
-    if response.status_code != 200:
-        detail = response.text.strip()
-        if not detail:
-            detail = response.reason
-        return False, f"Service returned HTTP {response.status_code}: {detail}", None
 
+def save_sheet_id(sheet_id: str) -> None:
+    """Persist the one-time sheet configuration; the API key is never written to disk."""
     try:
-        payload = response.json()
-    except ValueError:
-        payload = None
-
-    application = payload.get("application", {}) if isinstance(payload, dict) else {}
-    summary = (
-        f"{application.get('company_name', 'Unknown company')} - "
-        f"{application.get('role', 'Unknown role')} "
-        f"[{application.get('status', 'Unknown')}]"
-    )
-    return True, f"Application logged to your sheet: {summary}", payload
+        CONFIG_PATH.write_text(json.dumps({"sheet_id": sheet_id}, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        st.warning(f"Could not save the configuration to {CONFIG_PATH.name}: {exc}")
 
 
 def check_health() -> tuple[bool, str]:
@@ -92,175 +89,204 @@ def check_health() -> tuple[bool, str]:
     return True, response.text.strip()
 
 
-def render_setup_section() -> tuple[str | None, str]:
-    st.header("1. Google Sheet Access")
-    st.markdown(
-        f"""
-        AppliTrack AI writes every application to your own Google Sheet through a
-        shared service account. Grant it **Editor** access before you sync:
+def fetch_applications(sheet_id: str, limit: int, api_key: str) -> FetchResult:
+    """Read the recent application log for a sheet from the AppliTrack AI service."""
+    params: dict[str, Any] = {"sheet_id": sheet_id, "limit": limit}
+    if api_key:
+        params["client_api_key"] = api_key
 
-        1. Open your target Google Sheet.
-        2. Click **Share**.
-        3. Add `{SERVICE_ACCOUNT_EMAIL}` as a collaborator with the **Editor** role.
-        4. Copy the Sheet URL or ID into the field below.
-        """
-    )
+    try:
+        response = requests.get(APPLICATIONS_URL, params=params, timeout=REQUEST_TIMEOUT)
+    except requests.RequestException as exc:
+        return FetchResult("unreachable", [], f"Could not reach the AppliTrack AI service: {exc}")
 
-    raw_sheet = st.text_input(
+    if response.status_code == 401:
+        return FetchResult(
+            "unauthorized",
+            [],
+            "The service rejected the Client API Key. Check the key and that it matches "
+            "APPLITRACK_API_KEY on Render.",
+        )
+
+    if response.status_code == 502:
+        return FetchResult(
+            "error",
+            [],
+            "The service could not read your Google Sheet. Confirm it is shared as Editor "
+            f"with {SERVICE_ACCOUNT_EMAIL}.",
+        )
+
+    if response.status_code != 200:
+        detail = response.text.strip() or response.reason
+        return FetchResult("error", [], f"Service returned HTTP {response.status_code}: {detail}")
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return FetchResult("error", [], "The service returned a response that was not valid JSON.")
+
+    if not isinstance(payload, list):
+        return FetchResult("error", [], "The service returned an unexpected response shape.")
+
+    if not payload:
+        return FetchResult("empty", [], "No applications have been logged to this sheet yet.")
+
+    rows = [row for row in payload if isinstance(row, dict)]
+    return FetchResult("ok", rows, f"{len(rows)} recent application(s) read from your sheet.")
+
+
+def render_configuration_section() -> tuple[str, str]:
+    st.header("1. One-Time Setup")
+
+    with st.expander("Grant the service account access to your Google Sheet", expanded=True):
+        st.markdown(
+            f"""
+            AppliTrack AI reads and writes your applications through a shared service
+            account. Grant it **Editor** access once:
+
+            1. Open your target Google Sheet.
+            2. Click **Share**.
+            3. Add `{SERVICE_ACCOUNT_EMAIL}` as a collaborator with the **Editor** role.
+            4. Copy the Sheet URL or ID into the field below.
+            """
+        )
+
+    sheet_input = st.text_input(
         "Target Google Sheet ID or URL",
+        value=st.session_state.get("sheet_input", load_saved_sheet_id()),
         placeholder="https://docs.google.com/spreadsheets/d/<SHEET_ID>/edit",
         help="A full Sheet URL is accepted; the ID is extracted automatically.",
     )
 
-    sheet_id = extract_sheet_id(raw_sheet)
-    if sheet_id:
-        st.success(f"Detected Sheet ID: `{sheet_id}`")
-    elif raw_sheet.strip():
-        st.warning("That does not look like a Sheet URL or ID. Check the value above.")
-
-    return sheet_id, raw_sheet
-
-
-def render_application_section(sheet_id: str | None) -> None:
-    st.header("2. Application Details")
-
-    platform = st.selectbox("Platform origin", PLATFORMS)
-    custom_platform = ""
-    if platform == CUSTOM_PORTAL:
-        custom_platform = st.text_input(
-            "Custom portal name",
-            placeholder="Company careers page, referral form, ...",
-        ).strip()
-        if not custom_platform:
-            st.info("Enter the custom portal name to enable syncing.")
-
-    details = st.text_area(
-        "Application status, confirmation text, HTML snippet, or email body",
-        height=220,
-        placeholder=(
-            "Company: Acme Corp\n"
-            "Role: Software Engineer\n"
-            "Your application for the Software Engineer role has been received."
-        ),
-        help="Paste the raw text from any supported platform. AppliTrack AI classifies it automatically.",
+    api_key = st.text_input(
+        "Client API Key (optional)",
+        value=os.getenv(API_KEY_ENV_VAR, ""),
+        type="password",
+        placeholder="Only needed when APPLITRACK_API_KEY is set on Render",
+        help="Never written to disk. Held in this browser session only.",
     )
 
-    submitted = st.button("Sync & Log Application", type="primary")
+    detected = extract_sheet_id(sheet_input)
+    if detected and detected != sheet_input.strip():
+        st.caption(f"Detected Sheet ID: `{detected}`")
 
-    if not submitted:
-        return
+    if st.button("Save configuration", type="primary"):
+        if not detected:
+            st.error("That does not look like a Sheet URL or ID. Check the value above.")
+        else:
+            save_sheet_id(detected)
+            st.session_state["sheet_input"] = detected
+            st.session_state["configured"] = True
+            st.success(f"Saved. Sheet ID `{detected}` will be used for automated syncs.")
+
+    return detected or load_saved_sheet_id(), api_key.strip()
+
+
+def render_status_section(sheet_id: str, api_key: str) -> FetchResult | None:
+    st.header("2. Agent Status")
 
     if not sheet_id:
-        st.error("Provide a valid Google Sheet ID or URL first.")
-        return
+        st.info("Waiting for configuration: enter your Google Sheet ID or URL above.")
+        return None
 
-    if platform == CUSTOM_PORTAL and not custom_platform:
-        st.error("Enter the custom portal name first.")
-        return
+    healthy, detail = check_health()
+    result = fetch_applications(sheet_id, LOG_LIMIT, api_key)
 
-    if not details.strip():
-        st.error("Paste the application details first.")
-        return
-
-    with st.spinner("Syncing with AppliTrack AI..."):
-        success, message, payload = post_application(
-            sheet_id,
-            build_resume_text(custom_platform or platform, details),
+    if healthy and result.state in {"ok", "empty"}:
+        st.success("**Agent Status: Active & Monitoring**")
+        st.caption(
+            f"Webhook endpoint online ({detail}). Reading `{sheet_id}` on every "
+            f"{REFRESH_SECONDS}s refresh."
         )
+        return result
 
-    if success:
-        st.success(message)
-        if payload is not None:
-            with st.expander("Backend response"):
-                st.json(payload)
-    else:
-        st.error(message)
+    st.error("**Agent Status: Offline**")
+    if not healthy:
+        st.error(f"The AppliTrack AI service is not responding: {detail}")
+
+    return result
 
 
-def render_sync_settings_section() -> None:
-    st.header("3. Multi-Platform Automated Sync Settings")
+def render_integration_section() -> None:
+    st.header("3. Connected Accounts & Automated Webhooks")
 
     st.markdown(
-        f"""
-        Forward notifications from any supported portal (Unstop, LinkedIn, Upwork,
-        Indeed, Glassdoor, Lever, Greenhouse, Workday, email, or a custom careers
-        page) to the webhook below to log applications without using this dashboard.
-        """
+        "Every supported platform forwards to the same single endpoint. Configure the "
+        "forwarder once and the agent logs applications and status updates with no "
+        "further interaction."
     )
 
-    st.text_input("Webhook URL", value=WEBHOOK_URL)
-    st.caption("POST JSON: `sheet_id` and `resume_text`.")
-
-    if st.button("Test service connection"):
-        with st.spinner("Contacting the AppliTrack AI service..."):
-            healthy, detail = check_health()
-        if healthy:
-            st.success(f"Service online: {detail}")
-        else:
-            st.error(detail)
-
-    st.subheader("Session and cookie storage")
-    st.warning(
-        "Portal sessions and cookies grant direct access to your job accounts. They are "
-        "never sent to AppliTrack AI, and this dashboard only keeps them in this browser "
-        "session - reloading the page clears them. Prefer a local extension or script over "
-        "pasting cookies into a hosted web form."
-    )
-
-    session_platform = st.selectbox("Session belongs to", PLATFORMS, key="session_platform")
-    st.text_input(
-        "Cookie value or session token",
-        type="password",
-        placeholder="Leave blank unless an automation requires it",
-        key="session_cookie",
-    )
-    st.text_input(
-        "Local cookie jar path",
-        placeholder=r"C:\Users\you\cookies\linkedin.json",
-        help="Reference to a cookie file on the machine running the forwarder.",
-        key="cookie_path",
-    )
+    st.text_input("Webhook Endpoint", value=WEBHOOK_URL)
     st.caption(
-        f"Session retained for {session_platform} in this session only. "
-        "Nothing is written to disk or sent to the backend."
+        "POST JSON with `sheet_id` and `resume_text`. Add `client_api_key` when "
+        "`APPLITRACK_API_KEY` is set on the service."
     )
 
-    with st.expander("Automated forwarding options"):
+    st.code(
+        """{
+  "sheet_id": "<your-sheet-id>",
+  "resume_text": "Platform: LinkedIn\\n\\nYour application was received.",
+  "client_api_key": "<optional>"
+}""",
+        language="json",
+    )
+
+    with st.expander("1-click integration steps"):
         st.markdown(
             f"""
-            **Browser extension** - Watch portal notification pages and POST the visible
-            text to `{WEBHOOK_URL}` with your `sheet_id`.
+            **Email auto-forwarding (Zapier / Make)**
+            1. Create a Zap or scenario with an email trigger matching your job
+               notifications (LinkedIn, Indeed, Glassdoor, Upwork, Workday, Greenhouse).
+            2. Add a **Webhook / HTTP POST** action pointing at `{WEBHOOK_URL}`.
+            3. Map your sheet ID to `sheet_id` and the email body to `resume_text`.
+            4. Set the prefix to `Platform:` so classification stays accurate.
 
-            **Email parser** - Forward portal emails to an address handled by a parser
-            (for example a Gmail filter plus Apps Script or a mail-to-webhook service)
-            that sends the message body as `resume_text`.
+            **Gmail + Apps Script**
+            1. Label job notifications with a filter, for example `job-updates`.
+            2. Run a time-driven Apps Script that reads the label and POSTs the message
+               body to the endpoint above.
 
-            **API webhooks** - Poll the platform notification endpoints from your own
-            machine or server and forward each payload to the webhook URL.
+            **Background browser extension or local script**
+            1. Run an extension or Playwright script on your own machine.
+            2. Watch the notification pages for {", ".join(PLATFORMS[:8])}.
+            3. POST the visible text to the endpoint whenever new content appears.
 
-            **Local script** - Run a Playwright or Selenium notifier that reads the
-            notification DOM and posts the extracted text.
-
-            Example payload:
-
-            ```json
-            {{
-              "sheet_id": "<your-sheet-id>",
-              "resume_text": "Platform: LinkedIn\\n\\nYour application was received."
-            }}
-            ```
+            Supported origins: {", ".join(PLATFORMS)}.
             """
         )
 
 
-def main() -> None:
-    st.set_page_config(page_title="AppliTrack AI Dashboard", page_icon="📊", layout="centered")
-    st.title("AppliTrack AI Dashboard")
-    st.caption("Log job applications from any platform into your own Google Sheet.")
+def render_activity_section(result: FetchResult | None) -> None:
+    st.header("4. Agent Activity & Status Updates Log")
 
-    sheet_id, _ = render_setup_section()
-    render_application_section(sheet_id)
-    render_sync_settings_section()
+    if result is None:
+        st.info("The log appears here once a valid Google Sheet ID is configured.")
+        return
+
+    if result.state == "ok":
+        st.caption(result.message)
+        st.dataframe(result.rows, width="stretch", hide_index=True)
+        return
+
+    st.warning(result.message)
+
+
+@st.fragment(run_every=f"{REFRESH_SECONDS}s")
+def render_live_sections(sheet_id: str, api_key: str) -> None:
+    result = render_status_section(sheet_id, api_key)
+    render_activity_section(result)
+
+
+def main() -> None:
+    st.set_page_config(page_title="AppliTrack AI Agent", page_icon="📡", layout="centered")
+    st.title("Autonomous Agent Sync Dashboard")
+    st.caption("AppliTrack AI watches your job platforms and syncs applications to your Sheet.")
+
+    sheet_id, api_key = render_configuration_section()
+    if sheet_id:
+        render_live_sections(sheet_id, api_key)
+    else:
+        render_integration_section()
 
 
 if __name__ == "__main__":

@@ -1,13 +1,32 @@
+import hmac
 import json
+import os
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from services.ai_classifier import classify_application
-from services.sheet_service import update_or_append_application
+from services.sheet_service import read_recent_applications, update_or_append_application
 
 router = APIRouter()
+API_KEY_ENV_VAR = "APPLITRACK_API_KEY"
+MAX_APPLICATION_LIMIT = 100
+
+
+def verify_client_api_key(provided_key: str | None) -> bool:
+    """Accept any caller when APPLITRACK_API_KEY is unset, otherwise require a match."""
+    expected_key = (os.getenv(API_KEY_ENV_VAR) or "").strip()
+    if not expected_key:
+        return True
+
+    candidate = (provided_key or "").strip()
+    return bool(candidate) and hmac.compare_digest(candidate, expected_key)
+
+
+def require_valid_api_key(provided_key: str | None) -> None:
+    if not verify_client_api_key(provided_key):
+        raise HTTPException(status_code=401, detail="Invalid or missing client_api_key")
 
 
 class WebhookPayload(BaseModel):
@@ -36,6 +55,8 @@ class WebhookPayload(BaseModel):
 
 @router.post("/webhook/application")
 def receive_application(payload: WebhookPayload) -> dict[str, Any]:
+    require_valid_api_key(payload.client_api_key)
+
     if payload.resume_text and payload.resume_text.strip():
         raw_text = payload.resume_text
     elif isinstance(payload.applicant_data, str):
@@ -58,6 +79,25 @@ def receive_application(payload: WebhookPayload) -> dict[str, Any]:
         "application": application.model_dump(mode="json"),
         "sheet_updated": True,
     }
+
+
+@router.get("/applications")
+def list_applications(
+    sheet_id: str = Query(min_length=1),
+    limit: int = Query(default=10, ge=1, le=MAX_APPLICATION_LIMIT),
+    client_api_key: str | None = None,
+) -> list[dict[str, str]]:
+    """Return the most recently logged applications for a client sheet."""
+    require_valid_api_key(client_api_key)
+
+    applications = read_recent_applications(sheet_id.strip(), limit)
+    if applications is None:
+        raise HTTPException(
+            status_code=502,
+            detail="Could not read the client sheet. Confirm the service account has Editor access.",
+        )
+
+    return applications
 
 
 @router.get("/health")
