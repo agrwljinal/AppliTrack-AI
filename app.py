@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
+from urllib.parse import urlencode
 
 import requests
 import streamlit as st
@@ -417,13 +418,21 @@ def render_gmail_section(sheet_id: str, api_key: str) -> None:
         if error:
             st.warning(error)
 
+        login_url = f"{GOOGLE_LOGIN_URL}?{urlencode({'sheet_id': sheet_id})}"
+
         if not oauth_ready:
             st.warning(
                 "Google OAuth is not configured on the service yet. An administrator needs to "
                 "set the Google client credentials before accounts can be connected."
             )
-        elif not connected:
-            st.link_button("🔗 Connect Gmail Account", GOOGLE_LOGIN_URL, type="primary")
+        elif connected:
+            st.link_button("Reconnect Account", login_url, type="secondary")
+            st.caption(
+                "Reconnect to authorize a different Google account. "
+                "AppliTrack AI only ever receives read-only inbox access."
+            )
+        else:
+            st.link_button("🔗 Connect Gmail Account", login_url, type="primary")
             st.caption(
                 "Signs you in with Google and grants read-only inbox access. "
                 "AppliTrack AI can never send, delete, or modify your mail."
@@ -464,7 +473,9 @@ def render_activity_section(result: FetchResult | None) -> None:
 @st.fragment(run_every=f"{REFRESH_SECONDS}s")
 def render_live_sections(sheet_id: str, api_key: str) -> None:
     render_gmail_section(sheet_id, api_key)
-    render_activity_section(fetch_applications(sheet_id, LOG_LIMIT, api_key))
+    render_activity_section(
+        fetch_applications(sheet_id, LOG_LIMIT, api_key) if sheet_id else None
+    )
 
 
 def main() -> None:
@@ -474,8 +485,7 @@ def main() -> None:
     render_callback_notice()
 
     sheet_id, api_key = render_configuration_section()
-    if sheet_id:
-        render_live_sections(sheet_id, api_key)
+    render_live_sections(sheet_id, api_key)
 
 
 if __name__ == "__main__":
