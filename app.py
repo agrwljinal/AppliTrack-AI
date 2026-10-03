@@ -5,7 +5,6 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
-from urllib.parse import urlencode
 
 import requests
 import streamlit as st
@@ -403,7 +402,7 @@ def render_gmail_section(sheet_id: str, api_key: str) -> None:
 
         if connected:
             badges = [
-                pill("🟢 Gmail Connected & Actively Syncing Inbox", "green", dotted=True),
+                pill("🟢 Gmail Connected & Monitoring Inbox", "green", dotted=True),
                 pill(f"Account: {status.get('email')}", "blue"),
                 pill("Read-only access", "slate"),
             ]
@@ -424,11 +423,7 @@ def render_gmail_section(sheet_id: str, api_key: str) -> None:
                 "set the Google client credentials before accounts can be connected."
             )
         elif not connected:
-            st.link_button(
-                "🔗 Connect Gmail Account",
-                f"{GOOGLE_LOGIN_URL}?{urlencode({'sheet_id': sheet_id})}",
-                type="primary",
-            )
+            st.link_button("🔗 Connect Gmail Account", GOOGLE_LOGIN_URL, type="primary")
             st.caption(
                 "Signs you in with Google and grants read-only inbox access. "
                 "AppliTrack AI can never send, delete, or modify your mail."
