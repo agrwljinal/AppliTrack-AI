@@ -1,3 +1,5 @@
+from typing import Any
+
 import typer
 from fastapi import FastAPI
 from rich.console import Console
@@ -13,6 +15,16 @@ app.include_router(router)
 api = app
 console = Console()
 register_onboarding_command(cli)
+
+
+@app.get("/")
+def read_root() -> dict[str, Any]:
+    return {
+        "status": "online",
+        "service": "AppliTrack AI API",
+        "documentation": "/docs",
+        "health_check": "/health",
+    }
 
 
 @cli.callback()
