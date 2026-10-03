@@ -7,3 +7,5 @@ python-dotenv
 gspread
 google-genai
 httpx
+streamlit
+requests
