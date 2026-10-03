@@ -34,6 +34,7 @@ CLIENT_SECRET_ENV_VAR = "GOOGLE_CLIENT_SECRET"
 REDIRECT_URI_ENV_VAR = "GOOGLE_REDIRECT_URI"
 TOKEN_KEY_ENV_VAR = "APPLITRACK_TOKEN_KEY"
 POLL_SECONDS_ENV_VAR = "APPLITRACK_GMAIL_POLL_SECONDS"
+DEFAULT_SHEET_ENV_VAR = "GOOGLE_SHEET_ID"
 
 DEFAULT_REDIRECT_URI = "https://applitrack-ai.onrender.com/auth/google/callback"
 DEFAULT_POLL_SECONDS = 300
@@ -85,6 +86,16 @@ def poll_seconds() -> int:
     if not raw_value.isdigit():
         return DEFAULT_POLL_SECONDS
     return max(60, int(raw_value))
+
+
+def resolve_sheet_id(sheet_id: str | None) -> str | None:
+    """Use the requested sheet, else fall back to the service-wide default sheet."""
+    candidate = (sheet_id or "").strip()
+    if candidate:
+        return candidate
+
+    default_sheet = (os.getenv(DEFAULT_SHEET_ENV_VAR) or "").strip()
+    return default_sheet or None
 
 
 def _require_oauth_config() -> tuple[str, str, str]:
@@ -466,6 +477,25 @@ def sync_account(account: dict[str, Any]) -> dict[str, int]:
 
     logger.info("Gmail sync for %s: %s fetched, %s logged.", email, len(new_messages), logged)
     return {"fetched": len(new_messages), "logged": logged, "failed": failed}
+
+
+def fetch_and_sync_user_emails(sheet_id: str) -> dict[str, int]:
+    """Sync every Gmail account bound to a sheet, appending parsed rows to it."""
+    target = sheet_id.strip().casefold()
+    totals = {"accounts": 0, "fetched": 0, "logged": 0, "failed": 0}
+
+    for account in read_store().values():
+        if str(account.get("sheet_id", "")).strip().casefold() != target:
+            continue
+        totals["accounts"] += 1
+        result = sync_account(account)
+        for key in ("fetched", "logged", "failed"):
+            totals[key] += result[key]
+
+    if totals["accounts"] == 0:
+        logger.warning("No Gmail account is connected for sheet %s.", sheet_id)
+
+    return totals
 
 
 def run_ingestion_cycle() -> dict[str, int]:

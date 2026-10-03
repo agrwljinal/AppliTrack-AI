@@ -15,7 +15,9 @@ from services.gmail_service import (
     authorization_url,
     connected_emails,
     exchange_code_for_tokens,
+    fetch_and_sync_user_emails,
     oauth_configured,
+    resolve_sheet_id,
     run_ingestion_cycle,
 )
 from services.sheet_service import read_recent_applications, update_or_append_application
@@ -42,10 +44,10 @@ def require_valid_api_key(provided_key: str | None) -> None:
         raise HTTPException(status_code=401, detail="Invalid or missing client_api_key")
 
 
-def streamlit_ui_url(status: str) -> str:
+def streamlit_ui_url(outcome: str) -> str:
     base_url = (os.getenv(STREAMLIT_UI_ENV_VAR) or "").strip() or DEFAULT_STREAMLIT_UI_URL
     separator = "&" if "?" in base_url else "?"
-    return f"{base_url}{separator}{urlencode({'gmail': status})}"
+    return f"{base_url}{separator}{urlencode({'auth': outcome})}"
 
 
 class WebhookPayload(BaseModel):
@@ -101,7 +103,7 @@ def receive_application(payload: WebhookPayload) -> dict[str, Any]:
 
 
 @router.get("/auth/google/login")
-def google_login(sheet_id: str = Query(min_length=1)) -> RedirectResponse:
+def google_login(sheet_id: str | None = None) -> RedirectResponse:
     """Start the 1-click Gmail connection by redirecting to Google's consent screen."""
     if not oauth_configured():
         raise HTTPException(
@@ -109,8 +111,15 @@ def google_login(sheet_id: str = Query(min_length=1)) -> RedirectResponse:
             detail="Google OAuth is not configured on this service.",
         )
 
+    target_sheet = resolve_sheet_id(sheet_id)
+    if not target_sheet:
+        raise HTTPException(
+            status_code=400,
+            detail="A sheet_id is required, or set GOOGLE_SHEET_ID on the service.",
+        )
+
     try:
-        return RedirectResponse(authorization_url(sheet_id.strip()), status_code=307)
+        return RedirectResponse(authorization_url(target_sheet), status_code=307)
     except OAuthConfigurationError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -123,12 +132,10 @@ def google_callback(
     """Finish the OAuth handshake and send the user back to the dashboard."""
     try:
         exchange_code_for_tokens(code, state)
-    except ValueError as exc:
-        return RedirectResponse(streamlit_ui_url(f"error:{exc}"), status_code=307)
-    except OAuthConfigurationError as exc:
+    except (ValueError, OAuthConfigurationError) as exc:
         return RedirectResponse(streamlit_ui_url(f"error:{exc}"), status_code=307)
 
-    return RedirectResponse(streamlit_ui_url("connected"), status_code=307)
+    return RedirectResponse(streamlit_ui_url("success"), status_code=307)
 
 
 @router.get("/auth/google/status")
@@ -149,10 +156,21 @@ def google_status(
     }
 
 
-@router.post("/auth/gmail/sync")
-def trigger_gmail_sync(client_api_key: str | None = None) -> dict[str, Any]:
-    """Run one ingestion cycle on demand."""
+@router.post("/sync/gmail")
+@router.post("/auth/gmail/sync", include_in_schema=False)
+def trigger_gmail_sync(
+    sheet_id: str | None = None,
+    client_api_key: str | None = None,
+) -> dict[str, Any]:
+    """Run Gmail ingestion on demand, for one sheet or every connected account."""
     require_valid_api_key(client_api_key)
+
+    if sheet_id:
+        target_sheet = resolve_sheet_id(sheet_id)
+        if not target_sheet:
+            raise HTTPException(status_code=400, detail="A sheet_id is required.")
+        return fetch_and_sync_user_emails(target_sheet)
+
     return run_ingestion_cycle()
 
 

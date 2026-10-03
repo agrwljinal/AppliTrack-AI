@@ -327,11 +327,11 @@ def fetch_gmail_status(sheet_id: str, api_key: str) -> tuple[dict[str, Any] | No
 
 def render_callback_notice() -> None:
     """Surface the redirect result the backend sends back after the OAuth handshake."""
-    outcome = st.query_params.get("gmail", "")
+    outcome = st.query_params.get("auth", "")
     if not outcome:
         return
 
-    if outcome == "connected":
+    if outcome == "success":
         st.success("Gmail connected. The agent is now watching your inbox for job updates.")
     else:
         st.error(f"Gmail connection failed: {outcome.removeprefix('error:')}")
@@ -390,8 +390,8 @@ def render_configuration_section() -> tuple[str, str]:
 def render_gmail_section(sheet_id: str, api_key: str) -> None:
     with card(
         "2",
-        "1-Click Gmail Connection",
-        "Connect once. The agent reads job notifications and logs them for you.",
+        "Connect Gmail Account",
+        "Grant AppliTrack AI read-only access to search your inbox for job notifications.",
     ):
         if not sheet_id:
             st.info("Save your Google Sheet above to unlock the Gmail connection.")
@@ -403,7 +403,7 @@ def render_gmail_section(sheet_id: str, api_key: str) -> None:
 
         if connected:
             badges = [
-                pill("🟢 Gmail Connected & Actively Monitoring Inbox", "green", dotted=True),
+                pill("🟢 Gmail Connected & Actively Syncing Inbox", "green", dotted=True),
                 pill(f"Account: {status.get('email')}", "blue"),
                 pill("Read-only access", "slate"),
             ]
