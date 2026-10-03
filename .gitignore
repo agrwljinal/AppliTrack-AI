@@ -1,6 +1,7 @@
 .env
 credentials.json
 applitrack_config.json
+gmail_tokens.json
 venv/
 __pycache__/
 *.py[cod]

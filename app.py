@@ -5,14 +5,15 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
+from urllib.parse import urlencode
 
 import requests
 import streamlit as st
 
 API_BASE_URL = "https://applitrack-ai.onrender.com"
-WEBHOOK_URL = f"{API_BASE_URL}/webhook/application"
-HEALTH_URL = f"{API_BASE_URL}/health"
 APPLICATIONS_URL = f"{API_BASE_URL}/applications"
+GOOGLE_LOGIN_URL = f"{API_BASE_URL}/auth/google/login"
+GOOGLE_STATUS_URL = f"{API_BASE_URL}/auth/google/status"
 SERVICE_ACCOUNT_EMAIL = (
     "applitrack-service-account@gen-lang-client-0780751036.iam.gserviceaccount.com"
 )
@@ -25,8 +26,6 @@ PLATFORMS = (
     "Lever",
     "Greenhouse",
     "Workday",
-    "Email Notification",
-    "Custom Portal",
 )
 CONFIG_PATH = Path(__file__).resolve().parent / "applitrack_config.json"
 API_KEY_ENV_VAR = "APPLITRACK_API_KEY"
@@ -38,8 +37,8 @@ LOG_LIMIT = 10
 
 FetchState = Literal["ok", "empty", "unauthorized", "unreachable", "error"]
 
-BRAND_TITLE = "AppliTrack AI"
-BRAND_TAGLINE = "Autonomous Job Application Tracking & Sheet Sync Engine"
+BRAND_TITLE = "🤖 AppliTrack AI"
+BRAND_TAGLINE = "Autonomous 1-Click Gmail Sync for Multi-Platform Job Applications"
 
 LOGO_SVG = """
 <svg width="58" height="58" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg"
@@ -77,7 +76,7 @@ APP_STYLES = """
   }
   .ap-hero-logo { flex: 0 0 auto; line-height: 0; filter: drop-shadow(0 6px 14px rgba(79, 70, 229, .28)); }
   .ap-hero-title {
-    font-size: 2.55rem;
+    font-size: 2.45rem;
     font-weight: 800;
     letter-spacing: -0.025em;
     color: #0f172a;
@@ -165,10 +164,9 @@ APP_STYLES = """
   [data-testid="stExpander"] summary p { font-weight: 600; color: #1e293b; }
 
   footer, [data-testid="stStatusWidget"] { visibility: hidden; height: 0; }
-  .stButton > button[kind="primary"] {
+  .stButton > button[kind="primary"], .stLinkButton > a {
     border-radius: 10px;
     font-weight: 600;
-    box-shadow: 0 4px 12px rgba(79, 70, 229, 0.22);
   }
   [data-testid="stTextInput"] input, [data-testid="stTextArea"] textarea { border-radius: 10px; }
 </style>
@@ -214,19 +212,11 @@ def render_brand_header() -> None:
           </div>
         </div>
         <div class="ap-hero-badges">
-          {pill("Privacy-First", "slate")}
-          {pill("Google Sheets Native", "blue")}
-          {pill(f"Refreshes every {REFRESH_SECONDS}s", "green", dotted=True)}
+          {pill("Read-Only Gmail Access", "green", dotted=True)}
+          {pill("Zero Configuration", "blue")}
+          {pill(f"Refreshes every {REFRESH_SECONDS}s", "slate")}
         </div>
         """,
-        unsafe_allow_html=True,
-    )
-
-
-def render_platform_pills() -> None:
-    st.markdown('<div class="ap-section-label">Supported Origins</div>', unsafe_allow_html=True)
-    st.markdown(
-        "".join(pill(platform, "blue") for platform in PLATFORMS),
         unsafe_allow_html=True,
     )
 
@@ -262,19 +252,6 @@ def save_sheet_id(sheet_id: str) -> None:
         CONFIG_PATH.write_text(json.dumps({"sheet_id": sheet_id}, indent=2) + "\n", encoding="utf-8")
     except OSError as exc:
         st.warning(f"Could not save the configuration to {CONFIG_PATH.name}: {exc}")
-
-
-def check_health() -> tuple[bool, str]:
-    """Verify the deployed FastAPI service is reachable."""
-    try:
-        response = requests.get(HEALTH_URL, timeout=REQUEST_TIMEOUT)
-    except requests.RequestException as exc:
-        return False, f"Service unreachable: {exc}"
-
-    if response.status_code != 200:
-        return False, f"Service returned HTTP {response.status_code}: {response.text.strip()}"
-
-    return True, response.text.strip()
 
 
 def fetch_applications(sheet_id: str, limit: int, api_key: str) -> FetchResult:
@@ -323,17 +300,54 @@ def fetch_applications(sheet_id: str, limit: int, api_key: str) -> FetchResult:
     return FetchResult("ok", rows, f"{len(rows)} recent application(s) read from your sheet.")
 
 
+def fetch_gmail_status(sheet_id: str, api_key: str) -> tuple[dict[str, Any] | None, str]:
+    """Return the Gmail connection status for a sheet."""
+    params: dict[str, Any] = {"sheet_id": sheet_id}
+    if api_key:
+        params["client_api_key"] = api_key
+
+    try:
+        response = requests.get(GOOGLE_STATUS_URL, params=params, timeout=REQUEST_TIMEOUT)
+    except requests.RequestException as exc:
+        return None, f"Could not reach the AppliTrack AI service: {exc}"
+
+    if response.status_code != 200:
+        return None, f"The service returned HTTP {response.status_code}: {response.text.strip()}"
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return None, "The service returned a response that was not valid JSON."
+
+    if not isinstance(payload, dict):
+        return None, "The service returned an unexpected response shape."
+
+    return payload, ""
+
+
+def render_callback_notice() -> None:
+    """Surface the redirect result the backend sends back after the OAuth handshake."""
+    outcome = st.query_params.get("gmail", "")
+    if not outcome:
+        return
+
+    if outcome == "connected":
+        st.success("Gmail connected. The agent is now watching your inbox for job updates.")
+    else:
+        st.error(f"Gmail connection failed: {outcome.removeprefix('error:')}")
+
+
 def render_configuration_section() -> tuple[str, str]:
     with card(
         "1",
-        "One-Time Setup",
-        "Share your sheet once. The agent handles everything after this.",
+        "One-Time Google Sheet Setup",
+        "Tell the agent where to write. Everything else happens automatically.",
     ):
         with st.expander("Grant the service account access to your Google Sheet", expanded=True):
             st.markdown(
                 f"""
-                AppliTrack AI reads and writes your applications through a shared service
-                account. Grant it **Editor** access once:
+                AppliTrack AI writes your applications through a shared service account.
+                Grant it **Editor** access once:
 
                 1. Open your target Google Sheet.
                 2. Click **Share**.
@@ -373,110 +387,70 @@ def render_configuration_section() -> tuple[str, str]:
     return detected or load_saved_sheet_id(), api_key.strip()
 
 
-def render_status_section(sheet_id: str, api_key: str) -> FetchResult | None:
-    with card("2", "Agent Status", "Live connectivity and sync state."):
+def render_gmail_section(sheet_id: str, api_key: str) -> None:
+    with card(
+        "2",
+        "1-Click Gmail Connection",
+        "Connect once. The agent reads job notifications and logs them for you.",
+    ):
         if not sheet_id:
-            st.info("Waiting for configuration: enter your Google Sheet ID or URL above.")
-            return None
+            st.info("Save your Google Sheet above to unlock the Gmail connection.")
+            return
 
-        healthy, detail = check_health()
-        result = fetch_applications(sheet_id, LOG_LIMIT, api_key)
-        ready = healthy and result.state in {"ok", "empty"}
-        sheet_reachable = result.state in {"ok", "empty"}
+        status, error = fetch_gmail_status(sheet_id, api_key)
+        connected = bool(status and status.get("connected"))
+        oauth_ready = bool(status and status.get("oauth_configured"))
+
+        if connected:
+            badges = [
+                pill("🟢 Gmail Connected & Actively Monitoring Inbox", "green", dotted=True),
+                pill(f"Account: {status.get('email')}", "blue"),
+                pill("Read-only access", "slate"),
+            ]
+        else:
+            badges = [
+                pill("🔴 Gmail Disconnected", "red", dotted=True),
+                pill("No inbox access yet", "slate"),
+            ]
+
+        st.markdown("".join(badges), unsafe_allow_html=True)
+
+        if error:
+            st.warning(error)
+
+        if not oauth_ready:
+            st.warning(
+                "Google OAuth is not configured on the service yet. An administrator needs to "
+                "set the Google client credentials before accounts can be connected."
+            )
+        elif not connected:
+            st.link_button(
+                "🔗 Connect Gmail Account",
+                f"{GOOGLE_LOGIN_URL}?{urlencode({'sheet_id': sheet_id})}",
+                type="primary",
+            )
+            st.caption(
+                "Signs you in with Google and grants read-only inbox access. "
+                "AppliTrack AI can never send, delete, or modify your mail."
+            )
 
         st.markdown(
-            "".join(
-                [
-                    pill("Agent Ready", "green", dotted=True)
-                    if ready
-                    else pill("Agent Offline", "red", dotted=True),
-                    pill("Service Online", "green") if healthy else pill("Service Offline", "red"),
-                    pill("Sheet Connected", "green")
-                    if sheet_reachable
-                    else pill("Sheet Unreadable", "red"),
-                    pill(f"Sheet `{sheet_id}`", "slate"),
-                ]
-            ),
+            '<div class="ap-section-label">Platforms Covered Automatically</div>',
             unsafe_allow_html=True,
         )
-
-        if ready:
-            st.success("**Agent Status: Active & Monitoring**")
-            st.caption(
-                f"Webhook endpoint online ({detail}). Reading `{sheet_id}` on every "
-                f"{REFRESH_SECONDS}s refresh."
-            )
-            return result
-
-        st.error("**Agent Status: Offline**")
-        if not healthy:
-            st.error(f"The AppliTrack AI service is not responding: {detail}")
-
-    return result
-
-
-def render_integration_section() -> None:
-    with card(
-        "3",
-        "Connected Accounts & Automated Webhooks",
-        "Every supported platform forwards to the same single endpoint.",
-    ):
         st.markdown(
-            "Configure the forwarder once and the agent logs applications and status "
-            "updates with no further interaction."
+            "".join(pill(platform, "blue") for platform in PLATFORMS),
+            unsafe_allow_html=True,
         )
-
-        render_platform_pills()
-
-        st.markdown('<div class="ap-section-label">Webhook Endpoint</div>', unsafe_allow_html=True)
-        st.text_input("Webhook Endpoint", value=WEBHOOK_URL)
         st.caption(
-            "POST JSON with `sheet_id` and `resume_text`. Add `client_api_key` when "
-            "`APPLITRACK_API_KEY` is set on the service."
+            "The agent watches your inbox for confirmation and status-update emails from "
+            "these platforms, then logs each one to your sheet."
         )
-
-        st.code(
-            """{
-  "sheet_id": "<your-sheet-id>",
-  "resume_text": "Platform: LinkedIn\\n\\nYour application was received.",
-  "client_api_key": "<optional>"
-}""",
-            language="json",
-        )
-
-        with st.expander("Email auto-forwarding (Zapier / Make)"):
-            st.markdown(
-                f"""
-                1. Create a Zap or scenario with an email trigger matching your job
-                   notifications (LinkedIn, Indeed, Glassdoor, Upwork, Workday, Greenhouse).
-                2. Add a **Webhook / HTTP POST** action pointing at `{WEBHOOK_URL}`.
-                3. Map your sheet ID to `sheet_id` and the email body to `resume_text`.
-                4. Set the prefix to `Platform:` so classification stays accurate.
-                """
-            )
-
-        with st.expander("Gmail + Apps Script"):
-            st.markdown(
-                f"""
-                1. Label job notifications with a filter, for example `job-updates`.
-                2. Run a time-driven Apps Script that reads the label and POSTs the message
-                   body to the endpoint above: `{WEBHOOK_URL}`.
-                """
-            )
-
-        with st.expander("Background browser extension or local script"):
-            st.markdown(
-                f"""
-                1. Run an extension or Playwright script on your own machine.
-                2. Watch the notification pages for {", ".join(PLATFORMS[:8])}.
-                3. POST the visible text to `{WEBHOOK_URL}` whenever new content appears.
-                """
-            )
 
 
 def render_activity_section(result: FetchResult | None) -> None:
     with card(
-        "4",
+        "3",
         "Agent Activity & Status Updates Log",
         f"Most recent entries synced to your sheet, refreshed every {REFRESH_SECONDS}s.",
     ):
@@ -494,20 +468,19 @@ def render_activity_section(result: FetchResult | None) -> None:
 
 @st.fragment(run_every=f"{REFRESH_SECONDS}s")
 def render_live_sections(sheet_id: str, api_key: str) -> None:
-    result = render_status_section(sheet_id, api_key)
-    render_activity_section(result)
+    render_gmail_section(sheet_id, api_key)
+    render_activity_section(fetch_applications(sheet_id, LOG_LIMIT, api_key))
 
 
 def main() -> None:
-    st.set_page_config(page_title=BRAND_TITLE, page_icon="🤖", layout="centered")
+    st.set_page_config(page_title="AppliTrack AI", page_icon="🤖", layout="centered")
     inject_styles()
     render_brand_header()
+    render_callback_notice()
 
     sheet_id, api_key = render_configuration_section()
     if sheet_id:
         render_live_sections(sheet_id, api_key)
-    else:
-        render_integration_section()
 
 
 if __name__ == "__main__":

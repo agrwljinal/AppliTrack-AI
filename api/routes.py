@@ -2,15 +2,28 @@ import hmac
 import json
 import os
 from typing import Any
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from services.ai_classifier import classify_application
+from services.gmail_service import (
+    OAuthConfigurationError,
+    account_for_sheet,
+    authorization_url,
+    connected_emails,
+    exchange_code_for_tokens,
+    oauth_configured,
+    run_ingestion_cycle,
+)
 from services.sheet_service import read_recent_applications, update_or_append_application
 
 router = APIRouter()
 API_KEY_ENV_VAR = "APPLITRACK_API_KEY"
+STREAMLIT_UI_ENV_VAR = "STREAMLIT_UI_URL"
+DEFAULT_STREAMLIT_UI_URL = "http://localhost:8501"
 MAX_APPLICATION_LIMIT = 100
 
 
@@ -27,6 +40,12 @@ def verify_client_api_key(provided_key: str | None) -> bool:
 def require_valid_api_key(provided_key: str | None) -> None:
     if not verify_client_api_key(provided_key):
         raise HTTPException(status_code=401, detail="Invalid or missing client_api_key")
+
+
+def streamlit_ui_url(status: str) -> str:
+    base_url = (os.getenv(STREAMLIT_UI_ENV_VAR) or "").strip() or DEFAULT_STREAMLIT_UI_URL
+    separator = "&" if "?" in base_url else "?"
+    return f"{base_url}{separator}{urlencode({'gmail': status})}"
 
 
 class WebhookPayload(BaseModel):
@@ -79,6 +98,62 @@ def receive_application(payload: WebhookPayload) -> dict[str, Any]:
         "application": application.model_dump(mode="json"),
         "sheet_updated": True,
     }
+
+
+@router.get("/auth/google/login")
+def google_login(sheet_id: str = Query(min_length=1)) -> RedirectResponse:
+    """Start the 1-click Gmail connection by redirecting to Google's consent screen."""
+    if not oauth_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Google OAuth is not configured on this service.",
+        )
+
+    try:
+        return RedirectResponse(authorization_url(sheet_id.strip()), status_code=307)
+    except OAuthConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/auth/google/callback")
+def google_callback(
+    code: str = Query(min_length=1),
+    state: str = Query(min_length=1),
+) -> RedirectResponse:
+    """Finish the OAuth handshake and send the user back to the dashboard."""
+    try:
+        exchange_code_for_tokens(code, state)
+    except ValueError as exc:
+        return RedirectResponse(streamlit_ui_url(f"error:{exc}"), status_code=307)
+    except OAuthConfigurationError as exc:
+        return RedirectResponse(streamlit_ui_url(f"error:{exc}"), status_code=307)
+
+    return RedirectResponse(streamlit_ui_url("connected"), status_code=307)
+
+
+@router.get("/auth/google/status")
+def google_status(
+    sheet_id: str = Query(min_length=1),
+    client_api_key: str | None = None,
+) -> dict[str, Any]:
+    """Report whether a Gmail account is connected for the given sheet."""
+    require_valid_api_key(client_api_key)
+
+    account = account_for_sheet(sheet_id.strip())
+    return {
+        "oauth_configured": oauth_configured(),
+        "connected": account is not None,
+        "email": account.get("email") if account else None,
+        "sheet_id": sheet_id.strip(),
+        "connected_emails": connected_emails(),
+    }
+
+
+@router.post("/auth/gmail/sync")
+def trigger_gmail_sync(client_api_key: str | None = None) -> dict[str, Any]:
+    """Run one ingestion cycle on demand."""
+    require_valid_api_key(client_api_key)
+    return run_ingestion_cycle()
 
 
 @router.get("/applications")

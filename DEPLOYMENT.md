@@ -27,6 +27,12 @@ In the Render service's **Environment** settings, set:
 
 - `GEMINI_API_KEY`: your Google Gemini API key.
 - `GOOGLE_SHEETS_CREDENTIALS_JSON`: the Google service-account JSON, either pasted as JSON or base64-encoded JSON.
+- `GOOGLE_CLIENT_ID`: OAuth client ID from a Google Cloud project with the Gmail API enabled.
+- `GOOGLE_CLIENT_SECRET`: OAuth client secret for the same client.
+- `GOOGLE_REDIRECT_URI`: OAuth redirect URI. Defaults to `https://applitrack-ai.onrender.com/auth/google/callback`; add it verbatim to the OAuth client's authorized redirect URIs.
+- `STREAMLIT_UI_URL`: where `/auth/google/callback` sends the browser after connecting. Defaults to `http://localhost:8501`.
+- `APPLITRACK_TOKEN_KEY`: optional Fernet key used to encrypt stored Gmail tokens at rest. Generate one with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Without it, tokens are stored unencrypted and a warning is logged.
+- `APPLITRACK_GMAIL_POLL_SECONDS`: background ingestion interval. Defaults to 300 seconds, minimum 60.
 
 For base64, encode the contents of the service-account JSON file without adding line breaks. In PowerShell, for example:
 

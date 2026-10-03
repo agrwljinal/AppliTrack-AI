@@ -1,3 +1,5 @@
+import logging
+from contextlib import asynccontextmanager
 from typing import Any
 
 import typer
@@ -8,9 +10,20 @@ from rich.panel import Panel
 from api.routes import router
 from agent.orchestrator import run_cycle
 from cli.onboarding import register_onboarding_command
+from services.gmail_service import start_background_poller
+
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    if start_background_poller():
+        logger.info("Gmail ingestion poller started.")
+    yield
+
 
 cli = typer.Typer(no_args_is_help=True)
-app = FastAPI(title="AppliTrack AI")
+app = FastAPI(title="AppliTrack AI", lifespan=lifespan)
 app.include_router(router)
 api = app
 console = Console()
