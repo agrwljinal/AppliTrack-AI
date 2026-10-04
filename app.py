@@ -309,18 +309,18 @@ def fetch_gmail_status(sheet_id: str, api_key: str) -> tuple[dict[str, Any] | No
     try:
         response = requests.get(GOOGLE_STATUS_URL, params=params, timeout=REQUEST_TIMEOUT)
     except requests.RequestException as exc:
-        return None, f"Could not reach the AppliTrack AI service: {exc}"
+        return None, f"Backend API Error (unreachable): {exc}"
 
     if response.status_code != 200:
-        return None, f"The service returned HTTP {response.status_code}: {response.text.strip()}"
+        return None, f"Backend API Error ({response.status_code}): {response.text}"
 
     try:
         payload = response.json()
     except ValueError:
-        return None, "The service returned a response that was not valid JSON."
+        return None, f"Backend API Error ({response.status_code}): response was not valid JSON"
 
     if not isinstance(payload, dict):
-        return None, "The service returned an unexpected response shape."
+        return None, f"Backend API Error ({response.status_code}): unexpected response shape"
 
     return payload, ""
 
@@ -416,7 +416,7 @@ def render_gmail_section(sheet_id: str, api_key: str) -> None:
         st.markdown("".join(badges), unsafe_allow_html=True)
 
         if error:
-            st.warning(error)
+            st.error(error)
 
         login_url = f"{GOOGLE_LOGIN_URL}?{urlencode({'sheet_id': sheet_id})}"
 
@@ -425,7 +425,8 @@ def render_gmail_section(sheet_id: str, api_key: str) -> None:
                 "Google OAuth is not configured on the service yet. An administrator needs to "
                 "set the Google client credentials before accounts can be connected."
             )
-        elif connected:
+
+        if connected:
             st.link_button("Reconnect Account", login_url, type="secondary")
             st.caption(
                 "Reconnect to authorize a different Google account. "

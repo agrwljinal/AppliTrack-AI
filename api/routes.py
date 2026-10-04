@@ -1,5 +1,6 @@
 import hmac
 import json
+import logging
 import os
 from typing import Any
 from urllib.parse import urlencode
@@ -23,6 +24,7 @@ from services.gmail_service import (
 from services.sheet_service import read_recent_applications, update_or_append_application
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 API_KEY_ENV_VAR = "APPLITRACK_API_KEY"
 STREAMLIT_UI_ENV_VAR = "STREAMLIT_UI_URL"
 DEFAULT_STREAMLIT_UI_URL = "http://localhost:8501"
@@ -143,16 +145,30 @@ def google_status(
     sheet_id: str = Query(min_length=1),
     client_api_key: str | None = None,
 ) -> dict[str, Any]:
-    """Report whether a Gmail account is connected for the given sheet."""
+    """Report whether a Gmail account is connected, never raising on store problems."""
     require_valid_api_key(client_api_key)
 
-    account = account_for_sheet(sheet_id.strip())
+    configured = False
+    account: dict[str, Any] | None = None
+    emails: list[str] = []
+    error: str | None = None
+
+    try:
+        configured = oauth_configured()
+        account = account_for_sheet(sheet_id.strip())
+        emails = connected_emails()
+    except Exception as exc:
+        logger.warning("Could not read the Gmail connection status: %s", exc)
+        error = str(exc)
+
     return {
-        "oauth_configured": oauth_configured(),
+        "configured": configured,
+        "oauth_configured": configured,
         "connected": account is not None,
         "email": account.get("email") if account else None,
         "sheet_id": sheet_id.strip(),
-        "connected_emails": connected_emails(),
+        "connected_emails": emails,
+        "error": error,
     }
 
 
