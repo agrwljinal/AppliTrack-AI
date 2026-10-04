@@ -20,7 +20,7 @@ any platform that ships next month.
      EDIT BELOW: paste your deployed URL into DEPLOY_URL below.
      ============================================================ -->
 
-**Open the app:** `DEPLOY_URL`
+**Open the app:** `https://applitrack-ai.onrender.com/`
 
 <!-- ============================================================
      To edit:
