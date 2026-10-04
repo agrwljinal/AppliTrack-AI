@@ -21,7 +21,7 @@ Use your deployment branch name in place of `main` if it differs.
 
 The service starts two processes in one container: FastAPI on `127.0.0.1:8000` for public API consumers, and Streamlit on `$PORT`, which is the only process Render routes external traffic to. The dashboard reads the Google Sheet and the Gmail connection state in-process, and now builds the Google OAuth consent URL itself, so connecting Gmail needs no reachable FastAPI endpoint.
 
-Google sends the OAuth callback to `https://applitrack-ai.onrender.com/auth/google/callback`, which lands on Streamlit. Streamlit serves the app for that path, and `app.py` reads `code` and `state` from `st.query_params` to finish the handshake, so this URI must stay registered with Google. The callback URI is unchanged from earlier deployments; only the process that handles it moved.
+Google sends the OAuth callback to `https://applitrack-ai.onrender.com`, which lands on Streamlit. Streamlit serves the app for any path, and `app.py` reads `code` and `state` from `st.query_params`, so the same handler covers the root URL and any sub-path. The `state` value is signed and carries the target spreadsheet; treat it as the only trustworthy source for that.
 
 You can also create a Web Service directly from the repository using the same build command (`pip install -r requirements.txt`) and the start command from `Procfile`.
 
@@ -33,7 +33,7 @@ In the Render service's **Environment** settings, set:
 - `GOOGLE_SHEETS_CREDENTIALS_JSON`: the Google service-account JSON, either pasted as JSON or base64-encoded JSON.
 - `GOOGLE_CLIENT_ID`: OAuth client ID from a Google Cloud project with the Gmail API enabled.
 - `GOOGLE_CLIENT_SECRET`: OAuth client secret for the same client.
-- `GOOGLE_REDIRECT_URI`: OAuth redirect URI. Defaults to `https://applitrack-ai.onrender.com/auth/google/callback`; add it verbatim to the OAuth client's authorized redirect URIs. Google redirects here after consent and Streamlit handles it, so do not change it without re-registering the new URI with Google.
+- `GOOGLE_REDIRECT_URI`: OAuth redirect URI. Defaults to `https://applitrack-ai.onrender.com` (the site root), and **must** be registered verbatim under the OAuth client's authorized redirect URIs. Google answers with `redirect_uri_mismatch` if the two differ, which breaks connecting Gmail entirely. Override it only after registering the replacement with Google.
 - `STREAMLIT_UI_URL`: where the FastAPI `/auth/google/callback` endpoint sends the browser when it is called directly. Defaults to `http://localhost:8501`. The dashboard does not use this path.
 - `APPLITRACK_TOKEN_KEY`: optional Fernet key used to encrypt stored Gmail tokens at rest. Generate one with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Without it, tokens are stored unencrypted and a warning is logged.
 - `APPLITRACK_GMAIL_POLL_SECONDS`: background ingestion interval. Defaults to 300 seconds, minimum 60.

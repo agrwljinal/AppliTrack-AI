@@ -106,7 +106,7 @@ class OAuthLoginRouteTest(unittest.IsolatedAsyncioTestCase):
         response = await self.login(sheet_id="sheet-1")
         query = parse_qs(urlparse(response.headers["location"]).query)
         self.assertEqual(
-            query["redirect_uri"], ["https://applitrack-ai.onrender.com/auth/google/callback"]
+            query["redirect_uri"], ["https://applitrack-ai.onrender.com"]
         )
 
     async def test_unexpected_failure_is_reported_as_json_not_a_crash(self) -> None:

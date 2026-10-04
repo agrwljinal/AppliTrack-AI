@@ -15,6 +15,7 @@ from services import gmail_service as gs
 from services.sheet_service import HEADERS
 
 SHEET = "1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+ROOT = "https://applitrack-ai.onrender.com"
 CALLBACK = "https://applitrack-ai.onrender.com/auth/google/callback"
 GMAIL_READONLY = "https://www.googleapis.com/auth/gmail.readonly"
 CREDS = {
@@ -70,11 +71,46 @@ class GoogleAuthUrlTest(unittest.TestCase):
 
         self.assertEqual(gs.read_oauth_state(state), SHEET)
 
-    def test_falls_back_to_the_default_redirect_uri(self) -> None:
+    def test_falls_back_to_the_root_redirect_uri(self) -> None:
         os.environ.pop("GOOGLE_REDIRECT_URI", None)
         query = parse_qs(urlparse(dashboard.get_google_auth_url(SHEET)).query)
 
-        self.assertEqual(query["redirect_uri"], [CALLBACK])
+        self.assertEqual(query["redirect_uri"], [ROOT])
+
+    def test_default_redirect_uri_matches_the_token_exchange(self) -> None:
+        """A mismatch between the two is what triggers Google's redirect_uri_mismatch."""
+        os.environ.pop("GOOGLE_REDIRECT_URI", None)
+        query = parse_qs(urlparse(dashboard.get_google_auth_url(SHEET)).query)
+
+        self.assertEqual(query["redirect_uri"][0], gs.redirect_uri())
+
+    def test_root_callback_query_params_are_redeemed(self) -> None:
+        """The root URL supplies the same ?code=/?state= params as any sub-path."""
+        os.environ.pop("GOOGLE_REDIRECT_URI", None)
+        state = parse_qs(urlparse(dashboard.get_google_auth_url(SHEET)).query)["state"][0]
+        saved = {}
+
+        def fake_exchange(code, received_state):
+            saved["code"] = code
+            saved["sheet"] = gs.read_oauth_state(received_state)
+            return "user@gmail.com"
+
+        query_params = FakeQueryParams({"code": "root-code", "state": state})
+        rerun = MagicMock()
+        error = MagicMock()
+
+        with patch.object(dashboard, "exchange_code_for_tokens", side_effect=fake_exchange), \
+             patch.object(dashboard.st, "query_params", query_params), \
+             patch.object(dashboard.st, "error", error), \
+             patch.object(dashboard.st, "success", MagicMock()), \
+             patch.object(dashboard.st, "rerun", rerun):
+            dashboard._complete_oauth_from_query()
+
+        self.assertFalse(error.called)
+        self.assertEqual(saved["code"], "root-code")
+        self.assertEqual(saved["sheet"], SHEET)
+        self.assertTrue(query_params.cleared)
+        self.assertTrue(rerun.called)
 
     def test_missing_credentials_raise_a_readable_error(self) -> None:
         for missing in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"):
