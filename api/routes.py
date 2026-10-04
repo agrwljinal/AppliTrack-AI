@@ -12,9 +12,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from services.ai_classifier import classify_application
 from services.gmail_service import (
     OAuthConfigurationError,
-    account_for_sheet,
     authorization_url,
-    connected_emails,
+    connection_status,
     exchange_code_for_tokens,
     fetch_and_sync_user_emails,
     oauth_configured,
@@ -147,29 +146,7 @@ def google_status(
 ) -> dict[str, Any]:
     """Report whether a Gmail account is connected, never raising on store problems."""
     require_valid_api_key(client_api_key)
-
-    configured = False
-    account: dict[str, Any] | None = None
-    emails: list[str] = []
-    error: str | None = None
-
-    try:
-        configured = oauth_configured()
-        account = account_for_sheet(sheet_id.strip())
-        emails = connected_emails()
-    except Exception as exc:
-        logger.warning("Could not read the Gmail connection status: %s", exc)
-        error = str(exc)
-
-    return {
-        "configured": configured,
-        "oauth_configured": configured,
-        "connected": account is not None,
-        "email": account.get("email") if account else None,
-        "sheet_id": sheet_id.strip(),
-        "connected_emails": emails,
-        "error": error,
-    }
+    return connection_status(sheet_id.strip())
 
 
 @router.post("/sync/gmail")

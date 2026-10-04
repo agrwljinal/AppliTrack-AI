@@ -254,6 +254,35 @@ def account_for_sheet(sheet_id: str) -> dict[str, Any] | None:
     return None
 
 
+def connection_status(sheet_id: str) -> dict[str, Any]:
+    """Report Gmail configuration and connection state for a sheet. Never raises.
+
+    Shared by the FastAPI route and the Streamlit dashboard so both agree.
+    """
+    configured = False
+    account: dict[str, Any] | None = None
+    emails: list[str] = []
+    error: str | None = None
+
+    try:
+        configured = oauth_configured()
+        account = account_for_sheet(sheet_id)
+        emails = connected_emails()
+    except Exception as exc:
+        logger.warning("Could not read the Gmail connection status: %s", exc)
+        error = str(exc)
+
+    return {
+        "configured": configured,
+        "oauth_configured": configured,
+        "connected": account is not None,
+        "email": account.get("email") if account else None,
+        "sheet_id": sheet_id.strip(),
+        "connected_emails": emails,
+        "error": error,
+    }
+
+
 # --------------------------------------------------------------------------- oauth flow
 
 

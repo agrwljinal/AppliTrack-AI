@@ -7,14 +7,13 @@ from pathlib import Path
 from typing import Any, Literal, NamedTuple
 from urllib.parse import urlencode
 
-import requests
 import streamlit as st
 
+from services.gmail_service import connection_status
+from services.sheet_service import read_recent_applications
+
 PUBLIC_BASE_URL = "https://applitrack-ai.onrender.com"
-INTERNAL_BASE_URL = os.getenv("APPLITRACK_INTERNAL_API_URL", "http://127.0.0.1:8000")
-APPLICATIONS_URL = f"{INTERNAL_BASE_URL}/applications"
 GOOGLE_LOGIN_URL = f"{PUBLIC_BASE_URL}/auth/google/login"
-GOOGLE_STATUS_URL = f"{INTERNAL_BASE_URL}/auth/google/status"
 SERVICE_ACCOUNT_EMAIL = (
     "applitrack-service-account@gen-lang-client-0780751036.iam.gserviceaccount.com"
 )
@@ -32,11 +31,10 @@ CONFIG_PATH = Path(__file__).resolve().parent / "applitrack_config.json"
 API_KEY_ENV_VAR = "APPLITRACK_API_KEY"
 SHEET_URL_PATTERN = re.compile(r"/spreadsheets/d/([a-zA-Z0-9-_]+)")
 RAW_SHEET_ID_PATTERN = re.compile(r"^[a-zA-Z0-9-_]{10,}$")
-REQUEST_TIMEOUT = 30
 REFRESH_SECONDS = 30
 LOG_LIMIT = 10
 
-FetchState = Literal["ok", "empty", "unauthorized", "unreachable", "error"]
+FetchState = Literal["ok", "empty", "error"]
 
 BRAND_TITLE = "🤖 AppliTrack AI"
 BRAND_TAGLINE = "Autonomous 1-Click Gmail Sync for Multi-Platform Job Applications"
@@ -255,26 +253,14 @@ def save_sheet_id(sheet_id: str) -> None:
         st.warning(f"Could not save the configuration to {CONFIG_PATH.name}: {exc}")
 
 
-def fetch_applications(sheet_id: str, limit: int, api_key: str) -> FetchResult:
-    """Read the recent application log for a sheet from the AppliTrack AI service."""
-    params: dict[str, Any] = {"sheet_id": sheet_id, "limit": limit}
-    if api_key:
-        params["client_api_key"] = api_key
-
+def fetch_applications(sheet_id: str, limit: int) -> FetchResult:
+    """Read the recent application log straight from the sheet service."""
     try:
-        response = requests.get(APPLICATIONS_URL, params=params, timeout=REQUEST_TIMEOUT)
-    except requests.RequestException as exc:
-        return FetchResult("unreachable", [], f"Could not reach the AppliTrack AI service: {exc}")
+        rows = read_recent_applications(sheet_id, limit)
+    except Exception as exc:
+        return FetchResult("error", [], f"Could not read the Google Sheet: {exc}")
 
-    if response.status_code == 401:
-        return FetchResult(
-            "unauthorized",
-            [],
-            "The service rejected the Client API Key. Check the key and that it matches "
-            "APPLITRACK_API_KEY on Render.",
-        )
-
-    if response.status_code == 502:
+    if rows is None:
         return FetchResult(
             "error",
             [],
@@ -282,50 +268,20 @@ def fetch_applications(sheet_id: str, limit: int, api_key: str) -> FetchResult:
             f"with {SERVICE_ACCOUNT_EMAIL}.",
         )
 
-    if response.status_code != 200:
-        detail = response.text.strip() or response.reason
-        return FetchResult("error", [], f"Service returned HTTP {response.status_code}: {detail}")
-
-    try:
-        payload = response.json()
-    except ValueError:
-        return FetchResult("error", [], "The service returned a response that was not valid JSON.")
-
-    if not isinstance(payload, list):
-        return FetchResult("error", [], "The service returned an unexpected response shape.")
-
-    if not payload:
+    if not rows:
         return FetchResult("empty", [], "No applications have been logged to this sheet yet.")
 
-    rows = [row for row in payload if isinstance(row, dict)]
     return FetchResult("ok", rows, f"{len(rows)} recent application(s) read from your sheet.")
 
 
-def fetch_gmail_status(sheet_id: str, api_key: str) -> tuple[dict[str, Any] | None, str]:
-    """Return the Gmail connection status for a sheet."""
-    params: dict[str, Any] = {"sheet_id": sheet_id}
-    if api_key:
-        params["client_api_key"] = api_key
-
+def fetch_gmail_status(sheet_id: str) -> tuple[dict[str, Any] | None, str]:
+    """Return the Gmail connection status for a sheet, in-process."""
     try:
-        response = requests.get(GOOGLE_STATUS_URL, params=params, timeout=REQUEST_TIMEOUT)
-    except requests.RequestException as exc:
-        return None, f"Backend API Error (unreachable): {exc}"
+        status = connection_status(sheet_id)
+    except Exception as exc:
+        return None, f"Backend status check failed: {exc}"
 
-    if response.status_code != 200:
-        return None, f"Backend API Error ({response.status_code}): {response.text}"
-
-    try:
-        payload = response.json()
-        if isinstance(payload, str):
-            payload = json.loads(payload)
-    except Exception:
-        return None, f"Backend API Error ({response.status_code}): response was not valid JSON"
-
-    if not isinstance(payload, dict):
-        return None, f"Backend API Error ({response.status_code}): unexpected response shape"
-
-    return payload, ""
+    return status, status.get("error") or ""
 
 
 def render_callback_notice() -> None:
@@ -340,7 +296,7 @@ def render_callback_notice() -> None:
         st.error(f"Gmail connection failed: {outcome.removeprefix('error:')}")
 
 
-def render_configuration_section() -> tuple[str, str]:
+def render_configuration_section() -> str:
     with card(
         "1",
         "One-Time Google Sheet Setup",
@@ -366,12 +322,16 @@ def render_configuration_section() -> tuple[str, str]:
             help="A full Sheet URL is accepted; the ID is extracted automatically.",
         )
 
-        api_key = st.text_input(
+        st.text_input(
             "Client API Key (optional)",
             value=os.getenv(API_KEY_ENV_VAR, ""),
             type="password",
             placeholder="Only needed when APPLITRACK_API_KEY is set on Render",
-            help="Never written to disk. Held in this browser session only.",
+            help=(
+                "The dashboard reads the Google Sheet in-process, so this field is not used "
+                "here. It only matters when calling the public API directly. Never written "
+                "to disk."
+            ),
         )
 
         detected = extract_sheet_id(sheet_input)
@@ -387,10 +347,10 @@ def render_configuration_section() -> tuple[str, str]:
                 st.session_state["configured"] = True
                 st.success(f"Saved. Sheet ID `{detected}` will be used for automated syncs.")
 
-    return detected or load_saved_sheet_id(), api_key.strip()
+    return detected or load_saved_sheet_id()
 
 
-def render_gmail_section(sheet_id: str, api_key: str) -> None:
+def render_gmail_section(sheet_id: str) -> None:
     with card(
         "2",
         "Connect Gmail Account",
@@ -400,7 +360,7 @@ def render_gmail_section(sheet_id: str, api_key: str) -> None:
             st.info("Save your Google Sheet above to unlock the Gmail connection.")
             return
 
-        status, error = fetch_gmail_status(sheet_id, api_key)
+        status, error = fetch_gmail_status(sheet_id)
         connected = bool(status and status.get("connected"))
         oauth_ready = bool(status and status.get("oauth_configured"))
 
@@ -475,21 +435,20 @@ def render_activity_section(result: FetchResult | None) -> None:
 
 
 @st.fragment(run_every=f"{REFRESH_SECONDS}s")
-def render_live_sections(sheet_id: str, api_key: str) -> None:
-    render_gmail_section(sheet_id, api_key)
+def render_live_sections(sheet_id: str) -> None:
+    render_gmail_section(sheet_id)
     render_activity_section(
-        fetch_applications(sheet_id, LOG_LIMIT, api_key) if sheet_id else None
+        fetch_applications(sheet_id, LOG_LIMIT) if sheet_id else None
     )
 
 
 def main() -> None:
-    st.set_page_config(page_title="AppliTrack AI", page_icon="🤖", layout="centered")
+    st.set_page_config(page_title="AppliTrack AI", page_icon="\U0001F916", layout="centered")
     inject_styles()
     render_brand_header()
     render_callback_notice()
 
-    sheet_id, api_key = render_configuration_section()
-    render_live_sections(sheet_id, api_key)
+    render_live_sections(render_configuration_section())
 
 
 if __name__ == "__main__":
