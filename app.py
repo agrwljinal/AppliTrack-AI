@@ -355,6 +355,15 @@ def _complete_oauth_from_query() -> None:
     """
     code = st.query_params.get("code", "")
     state = st.query_params.get("state", "")
+
+    # Guard on the code itself. Streamlit re-runs the script on every interaction and
+    # on a timer, and the query-param clear only reaches the browser asynchronously, so
+    # a run can begin while the URL still carries ?code=. Redeeming is not idempotent:
+    # authorization codes are single-use, so a second attempt comes back invalid_grant.
+    if not code or st.session_state.get("redeemed_oauth_code") == code:
+        return
+
+    st.session_state["redeemed_oauth_code"] = code
     st.query_params.clear()
 
     try:
@@ -364,17 +373,15 @@ def _complete_oauth_from_query() -> None:
         email = exchange_code_for_tokens(code, state)
     except Exception as exc:
         logger.warning("Could not complete the Google OAuth handshake: %s", exc)
-        st.session_state["oauth_notice"] = (
-            "error",
-            f"Gmail connection failed: {exc}",
-        )
-        st.rerun()
+        st.error(f"Gmail connection failed: {exc}")
         return
 
     st.session_state["oauth_notice"] = (
         "success",
         f"Gmail connected as {email}. Tracking applications in {sheet_id}.",
     )
+    # State is fully settled above, so this single rerun just repaints the connected
+    # badge. The guard above makes a repeat impossible if the URL has not caught up.
     st.rerun()
 
 

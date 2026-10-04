@@ -247,6 +247,7 @@ class CallbackCompletionTest(unittest.TestCase):
 
     def setUp(self) -> None:
         set_oauth_env()
+        _reset_notice()
 
     def _run(self, params, exchange=None, sheet_config=None):
         saved = {}
@@ -308,17 +309,18 @@ class CallbackCompletionTest(unittest.TestCase):
         )
 
         self.assertEqual(saved, {}, "the code must not be exchanged on a bad state")
-        notice = dashboard.st.session_state.get("oauth_notice")
-        self.assertEqual(notice[0], "error")
-        self.assertTrue(params.cleared)
+        self.assertTrue(error.called, "the failure must be shown immediately")
+        self.assertIn("signature", error.call_args[0][0].lower())
+        self.assertTrue(params.cleared, "a dead code must not be left in the URL")
+        self.assertFalse(rerun.called, "a failure must not trigger a reload loop")
 
     def test_rejects_a_missing_state(self) -> None:
         saved, params, error, success, rerun = self._run({"code": "code-1"})
 
         self.assertEqual(saved, {})
-        notice = dashboard.st.session_state.get("oauth_notice")
-        self.assertEqual(notice[0], "error")
-        self.assertIn("state", notice[1].lower())
+        self.assertTrue(error.called)
+        self.assertIn("state", error.call_args[0][0].lower())
+        self.assertFalse(rerun.called)
 
     def test_reports_a_failed_exchange(self) -> None:
         state = parse_qs(urlparse(dashboard.get_google_auth_url(SHEET)).query)["state"][0]
@@ -327,9 +329,55 @@ class CallbackCompletionTest(unittest.TestCase):
             exchange=MagicMock(side_effect=RuntimeError("token endpoint said no")),
         )
 
-        notice = dashboard.st.session_state.get("oauth_notice")
-        self.assertEqual(notice[0], "error")
-        self.assertIn("token endpoint said no", notice[1])
+        self.assertTrue(error.called)
+        self.assertIn("token endpoint said no", error.call_args[0][0])
+        self.assertFalse(rerun.called)
+
+    def test_the_same_code_is_never_redeemed_twice(self) -> None:
+        """Streamlit re-runs on every interaction and on a timer; the URL may still
+        carry ?code= when the clear has not reached the browser yet."""
+        state = parse_qs(urlparse(dashboard.get_google_auth_url(SHEET)).query)["state"][0]
+        calls = []
+
+        def counting(code, state_arg):
+            calls.append(code)
+            return "user@gmail.com"
+
+        class StubbornParams(dict):
+            def clear(self):
+                pass  # models the frontend not applying the clear yet
+
+        query_params = StubbornParams({"code": "code-1", "state": state})
+        rerun = MagicMock()
+
+        with patch.object(dashboard, "exchange_code_for_tokens", side_effect=counting), \
+             patch.object(dashboard.st, "query_params", query_params), \
+             patch.object(dashboard.st, "error", MagicMock()), \
+             patch.object(dashboard.st, "success", MagicMock()), \
+             patch.object(dashboard.st, "rerun", rerun):
+            for _ in range(10):
+                dashboard.render_callback_notice()
+
+        self.assertEqual(calls, ["code-1"], "one redemption across ten script runs")
+        self.assertEqual(rerun.call_count, 1, "at most one reload")
+
+    def test_a_new_authorization_code_is_still_processed(self) -> None:
+        state = parse_qs(urlparse(dashboard.get_google_auth_url(SHEET)).query)["state"][0]
+        calls = []
+        query_params = FakeQueryParams({"code": "code-one", "state": state})
+
+        with patch.object(dashboard, "exchange_code_for_tokens",
+                          side_effect=lambda c, s: calls.append(c) or "user@gmail.com"), \
+             patch.object(dashboard.st, "query_params", query_params), \
+             patch.object(dashboard.st, "error", MagicMock()), \
+             patch.object(dashboard.st, "success", MagicMock()), \
+             patch.object(dashboard.st, "rerun", MagicMock()):
+            dashboard._complete_oauth_from_query()
+            query_params["code"] = "code-two"
+            query_params["state"] = state
+            dashboard._complete_oauth_from_query()
+
+        self.assertEqual(calls, ["code-one", "code-two"])
 
 
 class CallbackNoticeTest(unittest.TestCase):
@@ -373,8 +421,9 @@ class CallbackNoticeTest(unittest.TestCase):
 
 
 def _reset_notice() -> None:
-    """Drop any leftover oauth_notice so each test starts clean."""
+    """Drop leftover callback state so each test starts on a clean session."""
     dashboard.st.session_state.pop("oauth_notice", None)
+    dashboard.st.session_state.pop("redeemed_oauth_code", None)
 
 
 def _tmp_config(sheet_id):
