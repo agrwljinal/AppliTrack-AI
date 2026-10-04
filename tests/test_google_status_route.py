@@ -97,8 +97,11 @@ class DashboardUsesInProcessServicesTest(unittest.TestCase):
             self.assertNotIn(forbidden, self.source, f"app.py still references {forbidden}")
 
     def test_imports_services_in_process(self) -> None:
-        self.assertIn("from services.gmail_service import connection_status", self.source)
-        self.assertIn("read_recent_applications", self.source)
+        import app as dashboard
+
+        for name in ("connection_status", "read_recent_applications"):
+            self.assertTrue(hasattr(dashboard, name), f"app.py must use {name} in-process")
+        self.assertIsNone(getattr(dashboard, "requests", None))
 
     def test_public_oauth_link_is_preserved(self) -> None:
         import app as dashboard

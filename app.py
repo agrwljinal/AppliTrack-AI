@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 from collections.abc import Iterator
@@ -8,12 +9,25 @@ from typing import Any, Literal, NamedTuple
 from urllib.parse import urlencode
 
 import streamlit as st
+from google_auth_oauthlib.flow import Flow
 
-from services.gmail_service import connection_status
+from services.gmail_service import (
+    DEFAULT_REDIRECT_URI,
+    GMAIL_SCOPES,
+    OAuthConfigurationError,
+    build_oauth_state,
+    connection_status,
+    exchange_code_for_tokens,
+    read_oauth_state,
+)
 from services.sheet_service import read_recent_applications
 
 PUBLIC_BASE_URL = "https://applitrack-ai.onrender.com"
 GOOGLE_LOGIN_URL = f"{PUBLIC_BASE_URL}/auth/google/login"
+CLIENT_ID_ENV_VAR = "GOOGLE_CLIENT_ID"
+CLIENT_SECRET_ENV_VAR = "GOOGLE_CLIENT_SECRET"
+REDIRECT_URI_ENV_VAR = "GOOGLE_REDIRECT_URI"
+logger = logging.getLogger(__name__)
 SERVICE_ACCOUNT_EMAIL = (
     "applitrack-service-account@gen-lang-client-0780751036.iam.gserviceaccount.com"
 )
@@ -284,8 +298,69 @@ def fetch_gmail_status(sheet_id: str) -> tuple[dict[str, Any] | None, str]:
     return status, status.get("error") or ""
 
 
+def get_google_auth_url(sheet_id: str) -> str:
+    """Build the Google consent-screen URL here, so no redirect hop needs the API.
+
+    The redirect URI is unchanged, so the URI already registered with Google still
+    matches; only the process that receives the callback moves to the dashboard.
+    """
+    client_id = (os.getenv(CLIENT_ID_ENV_VAR) or "").strip()
+    client_secret = (os.getenv(CLIENT_SECRET_ENV_VAR) or "").strip()
+    redirect_uri = (os.getenv(REDIRECT_URI_ENV_VAR) or "").strip() or DEFAULT_REDIRECT_URI
+
+    missing = [
+        name
+        for name, value in ((CLIENT_ID_ENV_VAR, client_id), (CLIENT_SECRET_ENV_VAR, client_secret))
+        if not value
+    ]
+    if missing:
+        raise OAuthConfigurationError(
+            f"Google OAuth is not configured. Set {', '.join(missing)} on the service."
+        )
+
+    flow = Flow.from_client_config(
+        {
+            "web": {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "redirect_uris": [redirect_uri],
+            }
+        },
+        scopes=GMAIL_SCOPES,
+        redirect_uri=redirect_uri,
+    )
+    url, _state = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="consent",
+        state=build_oauth_state(sheet_id),
+    )
+    return url
+
+
 def render_callback_notice() -> None:
-    """Surface the redirect result the backend sends back after the OAuth handshake."""
+    """Finish the OAuth handshake in the dashboard and report the outcome."""
+    notice = st.session_state.pop("oauth_notice", None)
+    if notice:
+        tone, message = notice
+        (st.success if tone == "success" else st.error)(message)
+
+    if st.query_params.get("code"):
+        _complete_oauth_from_query()
+        return
+
+    google_error = st.query_params.get("error", "")
+    if google_error:
+        description = st.query_params.get("error_description", "")
+        st.query_params.clear()
+        st.error(
+            f"Google could not connect Gmail: {google_error}"
+            + (f" ({description})" if description else "")
+        )
+        return
+
     outcome = st.query_params.get("auth", "")
     if not outcome:
         return
@@ -294,6 +369,37 @@ def render_callback_notice() -> None:
         st.success("Gmail connected. The agent is now watching your inbox for job updates.")
     else:
         st.error(f"Gmail connection failed: {outcome.removeprefix('error:')}")
+
+
+def _complete_oauth_from_query() -> None:
+    """Exchange the callback code for tokens, then reload so the badge turns green.
+
+    Query params are cleared first: the dashboard re-runs on every interaction and
+    on a timer, and a leftover `code` would be redeemed again on each run.
+    """
+    code = st.query_params.get("code", "")
+    state = st.query_params.get("state", "")
+    st.query_params.clear()
+
+    try:
+        if not state:
+            raise ValueError("Google did not return a state parameter.")
+        sheet_id = read_oauth_state(state)
+        email = exchange_code_for_tokens(code, state)
+    except Exception as exc:
+        logger.warning("Could not complete the Google OAuth handshake: %s", exc)
+        st.session_state["oauth_notice"] = (
+            "error",
+            f"Gmail connection failed: {exc}",
+        )
+        st.rerun()
+        return
+
+    st.session_state["oauth_notice"] = (
+        "success",
+        f"Gmail connected as {email}. Tracking applications in {sheet_id}.",
+    )
+    st.rerun()
 
 
 def render_configuration_section() -> str:
@@ -362,7 +468,6 @@ def render_gmail_section(sheet_id: str) -> None:
 
         status, error = fetch_gmail_status(sheet_id)
         connected = bool(status and status.get("connected"))
-        oauth_ready = bool(status and status.get("oauth_configured"))
 
         if connected:
             badges = [
@@ -382,21 +487,31 @@ def render_gmail_section(sheet_id: str) -> None:
             st.error(error)
 
         login_url = f"{GOOGLE_LOGIN_URL}?{urlencode({'sheet_id': sheet_id})}"
+        button_label = (
+            "Reconnect Account" if connected else "\U0001F517 Connect Gmail Account"
+        )
 
-        if not oauth_ready:
-            st.warning(
-                "Google OAuth is not configured on the service yet. An administrator needs to "
-                "set the Google client credentials before accounts can be connected."
+        try:
+            auth_url = get_google_auth_url(sheet_id)
+        except Exception as exc:
+            logger.warning("Could not build the Google OAuth URL: %s", exc)
+            st.warning("Google OAuth credentials missing on server.")
+            st.link_button(button_label, login_url, type="primary")
+            st.caption(
+                "Opens the public AppliTrack AI OAuth endpoint. It reports the same "
+                "configuration problem, so reconnecting will not work until an "
+                "administrator sets GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET."
             )
+            return
 
         if connected:
-            st.link_button("Reconnect Account", login_url, type="secondary")
+            st.link_button(button_label, auth_url, type="secondary")
             st.caption(
                 "Reconnect to authorize a different Google account. "
                 "AppliTrack AI only ever receives read-only inbox access."
             )
         else:
-            st.link_button("🔗 Connect Gmail Account", login_url, type="primary")
+            st.link_button(button_label, auth_url, type="primary")
             st.caption(
                 "Signs you in with Google and grants read-only inbox access. "
                 "AppliTrack AI can never send, delete, or modify your mail."
