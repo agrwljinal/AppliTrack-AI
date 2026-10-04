@@ -40,10 +40,13 @@ DEFAULT_REDIRECT_URI = "https://applitrack-ai.onrender.com"
 DEFAULT_POLL_SECONDS = 300
 STATE_MAX_AGE_SECONDS = 600
 DEFAULT_GMAIL_QUERY = (
-    'is:unread {"application received" "application submitted" '
-    '"thank you for applying" "status update" "interview invitation" '
-    '"interview request" "offer letter" unstop instahyre linkedin workday '
-    "greenhouse lever}"
+    # Gmail has no parentheses grouping and no OR keyword; {a b} is its OR operator.
+    # Each alternative is a separate subject: term so the OR applies to whole phrases.
+    # Deliberately no is:unread: reading a confirmation in Gmail must not stop it
+    # being logged. Duplicates are already filtered by each account's processed_ids.
+    '{subject:submitted subject:received subject:"thank you for applying" '
+    'subject:"application confirmation"} -unsubscribe -"recommended opportunities" '
+    '-"job alert"'
 )
 MAX_MESSAGES_PER_RUN = 25
 MAX_PROCESSED_IDS = 500
@@ -423,7 +426,7 @@ def infer_platform(subject: str, sender: str, body: str) -> str:
 
 
 def fetch_job_notifications(credentials: Credentials) -> list[dict[str, str]]:
-    """Return unread job notifications with their plain-text bodies."""
+    """Return job notifications matching the intent query, with plain-text bodies."""
     query = (os.getenv("APPLITRACK_GMAIL_QUERY") or "").strip() or DEFAULT_GMAIL_QUERY
     service = gmail_service(credentials)
 
@@ -491,7 +494,12 @@ def sync_account(account: dict[str, Any]) -> dict[str, int]:
     failed = 0
     for message in new_messages:
         try:
-            application = classify_application(message["body"], message["platform"])
+            application = classify_application(
+                message["body"],
+                message["platform"],
+                subject=message["subject"],
+                sender=message["sender"],
+            )
             if update_or_append_application(application, sheet_id):
                 logged += 1
             else:

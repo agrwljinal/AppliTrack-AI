@@ -16,6 +16,7 @@ from services.gmail_service import (
     build_oauth_state,
     connection_status,
     exchange_code_for_tokens,
+    fetch_and_sync_user_emails,
     read_oauth_state,
 )
 from services.sheet_service import read_recent_applications
@@ -286,6 +287,49 @@ def fetch_applications(sheet_id: str, limit: int) -> FetchResult:
     return FetchResult("ok", rows, f"{len(rows)} recent application(s) read from your sheet.")
 
 
+def run_manual_sync(sheet_id: str) -> None:
+    """Run one fresh Gmail query for this sheet and log the outcome to session state.
+
+    Nothing here is memoised. A button press re-executes the script, so this hits
+    Gmail again rather than replaying the last result, and it writes through to the
+    sheet before returning. The activity log below re-reads the sheet in the same
+    pass, so the new rows are on screen without waiting for the next timer tick.
+    """
+    if not sheet_id:
+        st.session_state["sync_notice"] = ("error", "Save your Google Sheet ID before syncing.")
+        return
+
+    try:
+        totals = fetch_and_sync_user_emails(sheet_id)
+    except Exception as exc:
+        logger.warning("A manual Gmail sync failed: %s", exc)
+        st.session_state["sync_notice"] = ("error", f"Sync failed: {exc}")
+        return
+
+    st.session_state["sync_notice"] = ("success", describe_sync(totals))
+
+
+def describe_sync(totals: dict[str, int]) -> str:
+    """Summarise one sync run for the user."""
+    accounts = totals.get("accounts", 0)
+    if not accounts:
+        return (
+            "No Gmail account is connected to this sheet. Connect Gmail above, "
+            "then sync again."
+        )
+
+    fetched = totals.get("fetched", 0)
+    logged = totals.get("logged", 0)
+    failed = totals.get("failed", 0)
+
+    summary = (
+        f"Synced {fetched} new application email(s) and logged {logged} to your sheet."
+        if fetched
+        else "No new application emails since the last sync. Your sheet is up to date."
+    )
+    return f"{summary} ({failed} failed)" if failed else summary
+
+
 def fetch_gmail_status(sheet_id: str) -> tuple[dict[str, Any] | None, str]:
     """Return the Gmail connection status for a sheet, in-process."""
     try:
@@ -512,6 +556,25 @@ def render_gmail_section(sheet_id: str) -> None:
             "The agent watches your inbox for confirmation and status-update emails from "
             "these platforms, then logs each one to your sheet."
         )
+
+        if connected:
+            # Placed after the connect/reconnect link so the OAuth round trip keeps
+            # the primary position; a sync is a frequent, low-risk action.
+            if st.button("Sync Now", type="primary"):
+                run_manual_sync(sheet_id)
+
+            notice = st.session_state.get("sync_notice")
+            if isinstance(notice, tuple) and len(notice) == 2:
+                level, message = notice
+                if level == "error":
+                    st.error(message)
+                else:
+                    st.success(message)
+
+            st.caption(
+                "Runs a fresh Gmail search now and writes any new applications to your "
+                "sheet immediately."
+            )
 
 
 def render_activity_section(result: FetchResult | None) -> None:

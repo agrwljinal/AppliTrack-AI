@@ -25,7 +25,7 @@ class JobApplication(BaseModel):
     company_name: str = Field(min_length=1)
     role: str = Field(min_length=1)
     platform_used: str = Field(min_length=1)
-    status: Literal["Selected", "Rejected", "Pending"]
+    status: Literal["Applied", "Selected", "Rejected", "Pending"]
     date_updated: date = Field(default_factory=date.today)
 
 
