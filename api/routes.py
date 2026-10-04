@@ -5,18 +5,24 @@ import os
 from typing import Any
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, HTTPException, Query, Response
+from google_auth_oauthlib.flow import Flow
 from pydantic import BaseModel, Field, field_validator, model_validator
+from starlette.responses import JSONResponse, RedirectResponse
 
 from services.ai_classifier import classify_application
 from services.gmail_service import (
+    CLIENT_ID_ENV_VAR,
+    CLIENT_SECRET_ENV_VAR,
+    DEFAULT_REDIRECT_URI,
+    DEFAULT_SHEET_ENV_VAR,
+    GMAIL_SCOPES,
+    REDIRECT_URI_ENV_VAR,
     OAuthConfigurationError,
-    authorization_url,
+    build_oauth_state,
     connection_status,
     exchange_code_for_tokens,
     fetch_and_sync_user_emails,
-    oauth_configured,
     resolve_sheet_id,
     run_ingestion_cycle,
 )
@@ -103,26 +109,66 @@ def receive_application(payload: WebhookPayload) -> dict[str, Any]:
     }
 
 
-@router.get("/auth/google/login")
-def google_login(sheet_id: str | None = None) -> RedirectResponse:
+@router.get(
+    "/auth/google/login",
+    responses={
+        307: {"description": "Redirect to the Google consent screen."},
+        400: {"description": "No Google Sheet ID is available for this request."},
+        503: {"description": "Google OAuth is not configured, or the flow could not start."},
+    },
+)
+def google_login(sheet_id: str | None = None) -> Response:
     """Start the 1-click Gmail connection by redirecting to Google's consent screen."""
-    if not oauth_configured():
-        raise HTTPException(
-            status_code=503,
-            detail="Google OAuth is not configured on this service.",
-        )
-
-    target_sheet = resolve_sheet_id(sheet_id)
-    if not target_sheet:
-        raise HTTPException(
-            status_code=400,
-            detail="A sheet_id is required, or set GOOGLE_SHEET_ID on the service.",
-        )
-
     try:
-        return RedirectResponse(authorization_url(target_sheet), status_code=307)
-    except OAuthConfigurationError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        client_id = (os.getenv(CLIENT_ID_ENV_VAR) or "").strip()
+        client_secret = (os.getenv(CLIENT_SECRET_ENV_VAR) or "").strip()
+        redirect_uri = (os.getenv(REDIRECT_URI_ENV_VAR) or "").strip() or DEFAULT_REDIRECT_URI
+
+        missing = [
+            name
+            for name, value in ((CLIENT_ID_ENV_VAR, client_id), (CLIENT_SECRET_ENV_VAR, client_secret))
+            if not value
+        ]
+        if missing:
+            raise OAuthConfigurationError(
+                f"Google OAuth is not configured. Set {', '.join(missing)} on the service."
+            )
+
+        target_sheet = resolve_sheet_id(sheet_id)
+        if not target_sheet:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": (
+                        f"A sheet_id is required, or set {DEFAULT_SHEET_ENV_VAR} on the service."
+                    )
+                },
+            )
+
+        flow = Flow.from_client_config(
+            {
+                "web": {
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "redirect_uris": [redirect_uri],
+                }
+            },
+            scopes=GMAIL_SCOPES,
+            redirect_uri=redirect_uri,
+        )
+        authorization_url, _state = flow.authorization_url(
+            access_type="offline",
+            include_granted_scopes="true",
+            prompt="consent",
+            state=build_oauth_state(target_sheet),
+        )
+    except Exception as exc:
+        logger.warning("Could not start the Google OAuth flow: %s", exc)
+        return JSONResponse(status_code=503, content={"error": str(exc)})
+
+    return RedirectResponse(url=authorization_url, status_code=307)
 
 
 @router.get("/auth/google/callback")
