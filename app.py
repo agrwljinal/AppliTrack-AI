@@ -9,12 +9,10 @@ from typing import Any, Literal, NamedTuple
 from urllib.parse import urlencode
 
 import streamlit as st
-from google_auth_oauthlib.flow import Flow
 
 from services.gmail_service import (
     DEFAULT_REDIRECT_URI,
-    GMAIL_SCOPES,
-    OAuthConfigurationError,
+    build_oauth_flow,
     build_oauth_state,
     connection_status,
     exchange_code_for_tokens,
@@ -301,36 +299,14 @@ def fetch_gmail_status(sheet_id: str) -> tuple[dict[str, Any] | None, str]:
 def get_google_auth_url(sheet_id: str) -> str:
     """Build the Google consent-screen URL here, so no redirect hop needs the API.
 
+    The flow comes from the shared factory so the consent request and the later
+    token exchange agree on client config, redirect URI, and PKCE behaviour.
+
     The redirect URI is unchanged, so the URI already registered with Google still
     matches; only the process that receives the callback moves to the dashboard.
     """
-    client_id = (os.getenv(CLIENT_ID_ENV_VAR) or "").strip()
-    client_secret = (os.getenv(CLIENT_SECRET_ENV_VAR) or "").strip()
     redirect_uri = (os.getenv(REDIRECT_URI_ENV_VAR) or "").strip() or DEFAULT_REDIRECT_URI
-
-    missing = [
-        name
-        for name, value in ((CLIENT_ID_ENV_VAR, client_id), (CLIENT_SECRET_ENV_VAR, client_secret))
-        if not value
-    ]
-    if missing:
-        raise OAuthConfigurationError(
-            f"Google OAuth is not configured. Set {', '.join(missing)} on the service."
-        )
-
-    flow = Flow.from_client_config(
-        {
-            "web": {
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token",
-                "redirect_uris": [redirect_uri],
-            }
-        },
-        scopes=GMAIL_SCOPES,
-        redirect_uri=redirect_uri,
-    )
+    flow = build_oauth_flow(redirect_uri)
     url, _state = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",

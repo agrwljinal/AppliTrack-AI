@@ -11,6 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import app as dashboard
+from api import routes
 from services import gmail_service as gs
 from services.sheet_service import HEADERS
 
@@ -70,6 +71,31 @@ class GoogleAuthUrlTest(unittest.TestCase):
         state = parse_qs(urlparse(dashboard.get_google_auth_url(SHEET)).query)["state"][0]
 
         self.assertEqual(gs.read_oauth_state(state), SHEET)
+
+    def test_consent_url_sends_no_pkce_challenge(self) -> None:
+        """PKCE on by default would break the exchange; the verifier cannot survive
+        the redirect, so Google would reject the code with invalid_grant."""
+        set_oauth_env()
+        query = parse_qs(urlparse(dashboard.get_google_auth_url(SHEET)).query)
+
+        self.assertNotIn("code_challenge", query)
+        self.assertNotIn("code_challenge_method", query)
+
+    def test_shared_flow_factory_disables_pkce(self) -> None:
+        flow = gs.build_oauth_flow(ROOT)
+
+        self.assertFalse(flow.autogenerate_code_verifier)
+        self.assertIsNone(flow.code_verifier)
+
+    def test_auth_url_generator_has_a_single_flow_implementation(self) -> None:
+        """Divergent Flow construction is what caused the PKCE mismatch."""
+        import inspect
+
+        for func in (dashboard.get_google_auth_url, gs.authorization_url, routes.google_login):
+            with self.subTest(func=func.__name__):
+                self.assertNotIn("Flow.from_client_config", inspect.getsource(func))
+
+        self.assertIn("autogenerate_code_verifier=False", inspect.getsource(gs.build_oauth_flow))
 
     def test_redirect_uri_follows_the_env_var_immediately(self) -> None:
         """Nothing may memoise the value, so an env change takes effect at once."""
@@ -178,6 +204,42 @@ class GoogleAuthUrlTest(unittest.TestCase):
                 with self.assertRaises(gs.OAuthConfigurationError) as caught:
                     dashboard.get_google_auth_url(SHEET)
                 self.assertIn(missing, str(caught.exception))
+
+
+class TokenExchangeWithoutStoredVerifierTest(unittest.TestCase):
+    """The consent URL and the code redemption happen in different requests."""
+
+    def setUp(self) -> None:
+        set_oauth_env()
+
+    def test_fresh_flow_redeems_the_code_without_a_code_verifier(self) -> None:
+        state = parse_qs(urlparse(dashboard.get_google_auth_url(SHEET)).query)["state"][0]
+        captured = {}
+
+        class FakeCredentials:
+            token = "ya29.fake"
+            refresh_token = "1//fake-refresh"
+            token_uri = "https://oauth2.googleapis.com/token"
+            client_id = CREDS["GOOGLE_CLIENT_ID"]
+            client_secret = CREDS["GOOGLE_CLIENT_SECRET"]
+            scopes = [GMAIL_READONLY]
+
+        def fake_fetch_token(self, **kwargs):
+            captured["code"] = kwargs.get("code")
+            captured["state"] = kwargs.get("state")
+            captured["verifier"] = getattr(self, "code_verifier", "unset")
+            type(self).credentials = FakeCredentials()
+
+        with patch.object(gs.Flow, "fetch_token", fake_fetch_token), \
+             patch.object(gs, "_fetch_gmail_address", return_value="user@gmail.com"), \
+             patch.object(gs, "save_connected_account") as save:
+            email = gs.exchange_code_for_tokens("the-auth-code", state)
+
+        self.assertEqual(email, "user@gmail.com")
+        self.assertEqual(captured["code"], "the-auth-code")
+        self.assertEqual(captured["state"], state)
+        self.assertIsNone(captured["verifier"], "no verifier may be demanded or sent")
+        self.assertEqual(save.call_args[0][1], SHEET, "token is bound to the signed sheet")
 
 
 class CallbackCompletionTest(unittest.TestCase):

@@ -111,7 +111,9 @@ class OAuthLoginRouteTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_unexpected_failure_is_reported_as_json_not_a_crash(self) -> None:
         self.env()
-        with patch("api.routes.Flow.from_client_config", side_effect=RuntimeError("boom")):
+        with patch(
+            "services.gmail_service.Flow.from_client_config", side_effect=RuntimeError("boom")
+        ):
             response = await self.login(sheet_id="sheet-1")
 
         self.assertEqual(response.status_code, 503, response.text)

@@ -286,22 +286,35 @@ def connection_status(sheet_id: str) -> dict[str, Any]:
 # --------------------------------------------------------------------------- oauth flow
 
 
-def authorization_url(sheet_id: str) -> str:
+def build_oauth_flow(redirect_uri: str | None = None) -> Flow:
+    """Build the OAuth flow used for both the consent URL and the token exchange.
+
+    PKCE is disabled on purpose. `google_auth_oauthlib` 1.x turns it on by default
+    (`autogenerate_code_verifier=True`), which makes `authorization_url()` send a
+    `code_challenge` derived from a random verifier. The dashboard builds the
+    consent URL in one request and redeems the code in another, so that verifier
+    cannot survive the round trip. Leaving PKCE on makes Google reject the
+    exchange with `invalid_grant` because the verifier no longer matches.
+    """
     client_id, client_secret, uri = _require_oauth_config()
-    flow = Flow.from_client_config(
+    return Flow.from_client_config(
         {
             "web": {
                 "client_id": client_id,
                 "client_secret": client_secret,
                 "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                 "token_uri": "https://oauth2.googleapis.com/token",
-                "redirect_uris": [uri],
+                "redirect_uris": [redirect_uri or uri],
             }
         },
         scopes=GMAIL_SCOPES,
-        redirect_uri=uri,
+        redirect_uri=redirect_uri or uri,
+        autogenerate_code_verifier=False,
     )
-    return flow.authorization_url(
+
+
+def authorization_url(sheet_id: str) -> str:
+    return build_oauth_flow().authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
@@ -311,21 +324,7 @@ def authorization_url(sheet_id: str) -> str:
 
 def exchange_code_for_tokens(code: str, state: str) -> str:
     sheet_id = read_oauth_state(state)
-    client_id, client_secret, uri = _require_oauth_config()
-
-    flow = Flow.from_client_config(
-        {
-            "web": {
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token",
-                "redirect_uris": [uri],
-            }
-        },
-        scopes=GMAIL_SCOPES,
-        redirect_uri=uri,
-    )
+    flow = build_oauth_flow()
     flow.fetch_token(code=code, state=state)
 
     credentials = flow.credentials

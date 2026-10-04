@@ -6,19 +6,15 @@ from typing import Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException, Query, Response
-from google_auth_oauthlib.flow import Flow
 from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.responses import JSONResponse, RedirectResponse
 
 from services.ai_classifier import classify_application
 from services.gmail_service import (
-    CLIENT_ID_ENV_VAR,
-    CLIENT_SECRET_ENV_VAR,
     DEFAULT_REDIRECT_URI,
     DEFAULT_SHEET_ENV_VAR,
-    GMAIL_SCOPES,
     REDIRECT_URI_ENV_VAR,
-    OAuthConfigurationError,
+    build_oauth_flow,
     build_oauth_state,
     connection_status,
     exchange_code_for_tokens,
@@ -132,19 +128,7 @@ def receive_application(payload: WebhookPayload) -> dict[str, Any]:
 def google_login(sheet_id: str | None = None) -> Response:
     """Start the 1-click Gmail connection by redirecting to Google's consent screen."""
     try:
-        client_id = (os.getenv(CLIENT_ID_ENV_VAR) or "").strip()
-        client_secret = (os.getenv(CLIENT_SECRET_ENV_VAR) or "").strip()
         redirect_uri = (os.getenv(REDIRECT_URI_ENV_VAR) or "").strip() or DEFAULT_REDIRECT_URI
-
-        missing = [
-            name
-            for name, value in ((CLIENT_ID_ENV_VAR, client_id), (CLIENT_SECRET_ENV_VAR, client_secret))
-            if not value
-        ]
-        if missing:
-            raise OAuthConfigurationError(
-                f"Google OAuth is not configured. Set {', '.join(missing)} on the service."
-            )
 
         target_sheet = resolve_sheet_id(sheet_id)
         if not target_sheet:
@@ -157,19 +141,7 @@ def google_login(sheet_id: str | None = None) -> Response:
                 },
             )
 
-        flow = Flow.from_client_config(
-            {
-                "web": {
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                    "token_uri": "https://oauth2.googleapis.com/token",
-                    "redirect_uris": [redirect_uri],
-                }
-            },
-            scopes=GMAIL_SCOPES,
-            redirect_uri=redirect_uri,
-        )
+        flow = build_oauth_flow(redirect_uri)
         authorization_url, _state = flow.authorization_url(
             access_type="offline",
             include_granted_scopes="true",
