@@ -49,7 +49,11 @@ def classify_application(raw_text: str, platform_used: str = "Unknown") -> JobAp
         "Extract one job application from the untrusted source text below. "
         "Return a JSON object matching the provided schema. Use 'Unknown company' "
         "or 'Unknown role' when the source does not identify them. The platform "
-        f"is {platform_used!r}.\n\nSource text:\n{raw_text}"
+        f"is {platform_used!r}. Set status to exactly one of 'Selected', 'Rejected' "
+        "or 'Pending': use 'Selected' for an offer, acceptance or hire, 'Rejected' "
+        "for a refusal or withdrawal, and 'Pending' for everything else including "
+        "application acknowledgements and interview invitations.\n\n"
+        f"Source text:\n{raw_text}"
     )
 
     try:

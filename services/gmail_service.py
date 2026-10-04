@@ -40,8 +40,10 @@ DEFAULT_REDIRECT_URI = "https://applitrack-ai.onrender.com/auth/google/callback"
 DEFAULT_POLL_SECONDS = 300
 STATE_MAX_AGE_SECONDS = 600
 DEFAULT_GMAIL_QUERY = (
-    'is:unread {"application received" "status updated" Unstop '
-    '"LinkedIn Application" Workday Greenhouse Lever}'
+    'is:unread {"application received" "application submitted" '
+    '"thank you for applying" "status update" "interview invitation" '
+    '"interview request" "offer letter" unstop instahyre linkedin workday '
+    "greenhouse lever}"
 )
 MAX_MESSAGES_PER_RUN = 25
 MAX_PROCESSED_IDS = 500
