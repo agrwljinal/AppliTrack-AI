@@ -57,6 +57,18 @@ def streamlit_ui_url(outcome: str) -> str:
     return f"{base_url}{separator}{urlencode({'auth': outcome})}"
 
 
+def dashboard_callback_url(code: str, state: str) -> str:
+    """Hand the authorization code to the dashboard so it can finish the handshake.
+
+    Used only when this process cannot exchange the code itself. `state` must be
+    carried over: it holds the signed sheet binding the dashboard needs to know
+    which spreadsheet to attach the account to.
+    """
+    base_url = (os.getenv(STREAMLIT_UI_ENV_VAR) or "").strip() or DEFAULT_STREAMLIT_UI_URL
+    separator = "&" if "?" in base_url else "?"
+    return f"{base_url}{separator}{urlencode({'code': code, 'state': state})}"
+
+
 class WebhookPayload(BaseModel):
     sheet_id: str = Field(min_length=1)
     applicant_data: dict[str, Any] | str | None = None
@@ -179,8 +191,18 @@ def google_callback(
     """Finish the OAuth handshake and send the user back to the dashboard."""
     try:
         exchange_code_for_tokens(code, state)
-    except (ValueError, OAuthConfigurationError) as exc:
+    except ValueError as exc:
+        # Invalid, expired, or already-redeemed code, or a state that does not
+        # verify. There is nothing to hand off, so report it instead.
         return RedirectResponse(streamlit_ui_url(f"error:{exc}"), status_code=307)
+    except Exception:
+        # Missing or unusable credentials here; the dashboard may still succeed.
+        logger.warning(
+            "Could not exchange the OAuth code in the API process; "
+            "handing it to the dashboard instead.",
+            exc_info=True,
+        )
+        return RedirectResponse(dashboard_callback_url(code, state), status_code=307)
 
     return RedirectResponse(streamlit_ui_url("success"), status_code=307)
 

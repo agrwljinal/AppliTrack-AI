@@ -13,7 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from api.routes import router
 from main import app
-from services.gmail_service import read_oauth_state
+from services.gmail_service import OAuthConfigurationError, build_oauth_state, read_oauth_state
 
 OAUTH_ENV = (
     "GOOGLE_CLIENT_ID",
@@ -143,6 +143,60 @@ class OAuthLoginRouteTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 307)
         self.assertIn("auth=success", response.headers["location"])
+
+
+class CallbackHandoffTest(unittest.IsolatedAsyncioTestCase):
+    """The API hands an unredeemable code to the dashboard without leaking or losing state."""
+
+    def setUp(self) -> None:
+        for name in OAUTH_ENV:
+            os.environ.pop(name, None)
+        os.environ["STREAMLIT_UI_URL"] = "https://applitrack-ai.onrender.com"
+        self.state = build_oauth_state("sheet-abc")
+
+    async def _callback(self, **patch_kwargs):
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+        with patch("api.routes.exchange_code_for_tokens", **patch_kwargs):
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                return await client.get(
+                    "/auth/google/callback",
+                    params={"code": "api-code", "state": self.state},
+                    follow_redirects=False,
+                )
+
+    async def test_successful_exchange_redirects_without_leaking_the_code(self) -> None:
+        response = await self._callback(return_value="user@gmail.com")
+
+        self.assertEqual(response.status_code, 307)
+        self.assertIn("auth=success", response.headers["location"])
+        self.assertNotIn("code=", response.headers["location"])
+
+    async def test_unredeemable_code_is_handed_to_the_dashboard_with_state(self) -> None:
+        for failure in (
+            OAuthConfigurationError("GOOGLE_CLIENT_ID is not set"),
+            RuntimeError("api process is broken"),
+        ):
+            with self.subTest(failure=type(failure).__name__):
+                response = await self._callback(side_effect=failure)
+
+                self.assertEqual(response.status_code, 307, response.text)
+                location = response.headers["location"]
+                self.assertEqual(urlparse(location).netloc, "applitrack-ai.onrender.com")
+                query = parse_qs(urlparse(location).query)
+                self.assertEqual(query["code"], ["api-code"])
+                self.assertEqual(
+                    query["state"], [self.state], "state carries the signed sheet binding"
+                )
+                self.assertEqual(read_oauth_state(query["state"][0]), "sheet-abc")
+
+    async def test_invalid_code_reports_an_error_instead_of_a_500(self) -> None:
+        response = await self._callback(side_effect=ValueError("code already redeemed"))
+
+        self.assertEqual(response.status_code, 307)
+        query = parse_qs(urlparse(response.headers["location"]).query)
+        self.assertTrue(query["auth"][0].startswith("error:"), query)
+        self.assertIn("already redeemed", query["auth"][0])
+        self.assertNotIn("code=", response.headers["location"])
 
 
 class RouterMountTest(unittest.TestCase):
