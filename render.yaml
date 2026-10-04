@@ -3,10 +3,26 @@ services:
     name: applitrack-ai
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /health
+    startCommand: >-
+      uvicorn main:app --host 127.0.0.1 --port 8000 &
+      streamlit run app.py --server.address 0.0.0.0 --server.port $PORT
+    healthCheckPath: /_stcore/health
     envVars:
       - key: GEMINI_API_KEY
         sync: false
       - key: GOOGLE_SHEETS_CREDENTIALS_JSON
         sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        sync: false
+      - key: STREAMLIT_UI_URL
+        sync: false
+      - key: APPLITRACK_API_KEY
+        sync: false
+      - key: APPLITRACK_TOKEN_KEY
+        sync: false
+      - key: APPLITRACK_INTERNAL_API_URL
+        value: http://127.0.0.1:8000

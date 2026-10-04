@@ -16,10 +16,12 @@ Use your deployment branch name in place of `main` if it differs.
 
 1. Sign in to Render and choose **New +** > **Blueprint**.
 2. Connect the GitHub repository and select the deployment branch.
-3. Render reads `render.yaml` to install dependencies, start Uvicorn, and use `/health` for health checks.
+3. Render reads `render.yaml` to install dependencies, start both servers, and use `/_stcore/health` for health checks.
 4. Create the service and wait for the first deployment to finish.
 
-You can also create a Web Service directly from the repository using the same build command (`pip install -r requirements.txt`) and start command (`uvicorn main:app --host 0.0.0.0 --port $PORT`).
+The service starts two processes: FastAPI on `127.0.0.1:8000` for internal calls from the dashboard, and Streamlit on `$PORT` for the user-facing UI. The dashboard reads `APPLITRACK_INTERNAL_API_URL` (default `http://127.0.0.1:8000`) for `/applications` and `/auth/google/status`, while browser-facing links such as `/auth/google/login` still use the public domain.
+
+You can also create a Web Service directly from the repository using the same build command (`pip install -r requirements.txt`) and the start command from `Procfile`.
 
 ## 3. Set environment variables
 
@@ -42,4 +44,4 @@ For base64, encode the contents of the service-account JSON file without adding 
 
 Paste the resulting value into Render as `GOOGLE_SHEETS_CREDENTIALS_JSON`. Keep these values in Render's environment settings; never commit them to GitHub. The service account identified by the JSON must be granted access to each client spreadsheet. The `/webhook/application` endpoint receives each target spreadsheet ID in the request's `sheet_id` field.
 
-After setting the variables, redeploy if needed and verify the service at `https://<your-render-app>.onrender.com/health`. It should return `{"status":"healthy","service":"AppliTrack AI"}`.
+After setting the variables, redeploy if needed. The Streamlit dashboard is served at `https://<your-render-app>.onrender.com` and reports its own health at `/_stcore/health`. The FastAPI service listens on port 8000 inside the container.

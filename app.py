@@ -10,10 +10,11 @@ from urllib.parse import urlencode
 import requests
 import streamlit as st
 
-API_BASE_URL = "https://applitrack-ai.onrender.com"
-APPLICATIONS_URL = f"{API_BASE_URL}/applications"
-GOOGLE_LOGIN_URL = f"{API_BASE_URL}/auth/google/login"
-GOOGLE_STATUS_URL = f"{API_BASE_URL}/auth/google/status"
+PUBLIC_BASE_URL = "https://applitrack-ai.onrender.com"
+INTERNAL_BASE_URL = os.getenv("APPLITRACK_INTERNAL_API_URL", "http://127.0.0.1:8000")
+APPLICATIONS_URL = f"{INTERNAL_BASE_URL}/applications"
+GOOGLE_LOGIN_URL = f"{PUBLIC_BASE_URL}/auth/google/login"
+GOOGLE_STATUS_URL = f"{INTERNAL_BASE_URL}/auth/google/status"
 SERVICE_ACCOUNT_EMAIL = (
     "applitrack-service-account@gen-lang-client-0780751036.iam.gserviceaccount.com"
 )
