@@ -316,7 +316,9 @@ def fetch_gmail_status(sheet_id: str, api_key: str) -> tuple[dict[str, Any] | No
 
     try:
         payload = response.json()
-    except ValueError:
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+    except Exception:
         return None, f"Backend API Error ({response.status_code}): response was not valid JSON"
 
     if not isinstance(payload, dict):
