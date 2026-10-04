@@ -71,6 +71,65 @@ class GoogleAuthUrlTest(unittest.TestCase):
 
         self.assertEqual(gs.read_oauth_state(state), SHEET)
 
+    def test_redirect_uri_follows_the_env_var_immediately(self) -> None:
+        """Nothing may memoise the value, so an env change takes effect at once."""
+        seen = []
+        for value in (ROOT, "https://staging.applitrack-ai.onrender.com", ROOT):
+            set_oauth_env(GOOGLE_REDIRECT_URI=value)
+            query = parse_qs(urlparse(dashboard.get_google_auth_url(SHEET)).query)
+            seen.append(query["redirect_uri"][0])
+
+        self.assertEqual(
+            seen,
+            [
+                ROOT,
+                "https://staging.applitrack-ai.onrender.com",
+                ROOT,
+            ],
+        )
+
+    def test_blank_env_value_falls_back_to_the_root_url(self) -> None:
+        for raw in ("", "   "):
+            with self.subTest(raw=raw):
+                set_oauth_env(GOOGLE_REDIRECT_URI=raw)
+                query = parse_qs(urlparse(dashboard.get_google_auth_url(SHEET)).query)
+                self.assertEqual(query["redirect_uri"], [ROOT])
+
+    def test_redirect_uri_never_carries_a_loopback_or_extra_path(self) -> None:
+        set_oauth_env()
+        os.environ.pop("GOOGLE_REDIRECT_URI", None)
+        url = dashboard.get_google_auth_url(SHEET)
+        redirect_uri = parse_qs(urlparse(url).query)["redirect_uri"][0]
+
+        self.assertNotIn("127.0.0.1", url)
+        self.assertNotIn("localhost", url)
+        self.assertEqual(urlparse(redirect_uri).path, "")
+        self.assertEqual(urlparse(url).netloc, "accounts.google.com")
+
+    def test_an_explicitly_configured_callback_path_is_still_honoured(self) -> None:
+        set_oauth_env()
+        query = parse_qs(urlparse(dashboard.get_google_auth_url(SHEET)).query)
+
+        self.assertEqual(query["redirect_uri"], [CALLBACK])
+
+    def test_state_is_fresh_on_every_call(self) -> None:
+        """A cached URL would reuse one CSRF nonce across every visitor."""
+        set_oauth_env()
+        states = [
+            parse_qs(urlparse(dashboard.get_google_auth_url(SHEET)).query)["state"][0]
+            for _ in range(3)
+        ]
+
+        self.assertEqual(len(set(states)), 3)
+
+    def test_auth_url_generator_is_not_cached(self) -> None:
+        """st.cache_data is global across sessions; it must never wrap this."""
+        for cached in (dashboard.st.cache_data, dashboard.st.cache_resource):
+            with self.subTest(cache=type(cached).__name__):
+                self.assertIsNot(getattr(dashboard, "get_google_auth_url"), cached)
+                unwrapped = getattr(dashboard.get_google_auth_url, "__wrapped__", None)
+                self.assertIsNone(unwrapped, "the URL builder must not be a cached wrapper")
+
     def test_falls_back_to_the_root_redirect_uri(self) -> None:
         os.environ.pop("GOOGLE_REDIRECT_URI", None)
         query = parse_qs(urlparse(dashboard.get_google_auth_url(SHEET)).query)
