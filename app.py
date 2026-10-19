@@ -192,6 +192,14 @@ class FetchResult(NamedTuple):
 
 
 def inject_styles() -> None:
+    css_path = Path(__file__).resolve().parent / "style.css"
+    extra = ""
+    try:
+        extra = css_path.read_text(encoding="utf-8")
+    except OSError:
+        extra = ""
+    if extra.strip():
+        st.markdown(f"<style>{extra}</style>", unsafe_allow_html=True)
     st.markdown(APP_STYLES, unsafe_allow_html=True)
 
 
